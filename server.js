@@ -96,7 +96,7 @@ app.post("/api/run", async (req,res)=>{
           await page.waitForLoadState(s.state || "load");
         } else if (s.action === "screenshot"){
           log(`[${i}] screenshot`);
-          const path = `runs/${id}-${i}.png"];
+          const path = `runs/${id}-${i}.png`;
           await page.screenshot({ path, fullPage: true });
           r.shots.push({ url: `/${path}` });
         }
@@ -126,3 +126,5 @@ app.use("/runs", express.static("runs"));
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=> console.log("Automation backend on " + PORT));
+
+
