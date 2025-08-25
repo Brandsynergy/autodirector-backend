@@ -10,4 +10,5 @@ This is a minimal backend you can push to GitHub and deploy on Render.
    - `CORS_ORIGIN` = *
    - (optional) `FREE_CREDITS_ON_SIGNUP` = 100
 4. Deploy. Copy the live URL (e.g. `https://your-app.onrender.com`).
-5. In Lovable.dev, paste the single `AutoDirector.jsx` file (included separately) and set 
+5. In Lovable.dev, paste the single `AutoDirector.jsx` file (included separately) and set `BACKEND_URL` to that URL.
+
