@@ -1,20 +1,15 @@
-{
-  "name": "autodirector",
-  "version": "1.1.0",
-  "type": "module",
-  "scripts": { "start": "node server.js" },
-  "dependencies": {
-    "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5",
-    "csv-stringify": "^6.5.0",
-    "express": "^4.19.2",
-    "imapflow": "^1.0.0",
-    "nodemailer": "^6.9.0",
-    "openai": "^4.56.0",
-    "playwright": "1.55.0",
-    "uuid": "^9.0.1"
-  }
+"dependencies": {
+  "cheerio": "^1.0.0-rc.12",
+  "csv-stringify": "^6.5.0",
+  "express": "^4.19.2",
+  "openai": "^4.56.0",
+  "playwright": "1.55.0",
+  "imapflow": "^1.0.0",
+  "nodemailer": "^6.9.0",
+  "cors": "^2.8.5",
+  "uuid": "^9.0.1"
 }
+
 
 
 
