@@ -9,8 +9,8 @@ import { v4 as uuidv4 } from "uuid";
 import OpenAI from "openai";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
-// ⬇️ Cheerio fix: use named export "load"
 import { load as cheerioLoad } from "cheerio";
+import { stringify as csvStringify } from "csv-stringify";
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
@@ -318,7 +318,7 @@ app.get("/api/run/:id", (req,res)=>{
   res.json({ ...r, credits_after: u.credits });
 });
 
-// ---------- CRON RUNNERS (call from Render Cron or manually) ----------
+// ---------- CRON RUNNERS ----------
 
 // A3: monitors
 app.get("/api/monitors/run", async (_req,res)=>{
@@ -441,7 +441,6 @@ async function seoSnapshotEmailBody(keyword){
     results.forEach((r,i)=>lines.push(`${i+1}. ${r.title}\n   ${r.link}`));
     return lines.join("\n") || "No results.";
   } else {
-    // fallback: Google News RSS as proxy snapshot
     const items = await fetchGoogleNews(keyword, 10);
     items.forEach((i,idx)=>lines.push(`${idx+1}. ${i.title}${i.source ? " — "+i.source:""}\n   ${i.link}`));
     lines.push("\n(Set SERPAPI_KEY to get standard Google results.)");
@@ -452,7 +451,7 @@ async function seoSnapshotEmailBody(keyword){
 // A7
 async function extractToCSV(url, selector){
   const html = await (await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }})).text();
-  const $ = cheerioLoad(html); // ⬅️ Cheerio fix here
+  const $ = cheerioLoad(html);
   const rows = [];
   const emails = new Set();
 
@@ -467,14 +466,10 @@ async function extractToCSV(url, selector){
   const id = uuidv4();
   const csvPath = path.join("runs", `${id}.csv`);
   await new Promise((resolve,reject)=>{
-    const { stringify } = await import("csv-stringify"); // dynamic import safe in Node 22
-    const s = stringify(rows, { header:true });
+    const s = csvStringify(rows, { header:true });
     const w = fs.createWriteStream(csvPath);
     s.on("error", reject); w.on("error", reject); w.on("finish", resolve);
     s.pipe(w);
-  }).catch(async () => {
-    // fallback to already-imported named export at top if dynamic fails
-    const { stringify } = await import("csv-stringify");
   });
 
   if (emails.size){
@@ -494,7 +489,7 @@ async function uptimeCheck({ url, expect_selector, expect_text }){
     if (expect_text && !body.toLowerCase().includes(String(expect_text).toLowerCase()))
       return { ok:false, message:`Text not found: "${expect_text}"` };
     if (expect_selector){
-      const $ = cheerioLoad(body); // ⬅️ Cheerio fix here
+      const $ = cheerioLoad(body);
       if (!$(expect_selector).length) return { ok:false, message:`Selector not found: ${expect_selector}` };
     }
     return { ok:true, message:`OK ${url}` };
@@ -549,26 +544,8 @@ async function gmailDigestText({ hours = 24 } = {}){
 }
 
 async function forwardLastEmail(to, log=()=>{}) {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
+  const user
 
-  const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
-  await imap.connect();
-  const box = await imap.selectMailbox("INBOX");
-  if (!box.exists) { await imap.logout(); throw new Error("No messages in INBOX"); }
-  const seq = box.exists;
-  const msg = await imap.fetchOne(seq, { envelope: true, source: true });
-  const subject = (msg?.envelope?.subject) || "(no subject)";
-  const raw = msg?.source?.toString("utf8") || "";
-  await imap.logout();
-
-  await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded message (raw below):\n\n${raw.slice(0, 100000)}` });
-}
-
-// ---------- boot ----------
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
 
 
 
