@@ -34,16 +34,25 @@ app.get("/api/user", (req,res)=>{
 app.post("/api/plan", async (req,res)=>{
   const text = (req.body?.prompt || "").slice(0, 800);
 
-  // Short-circuit for Gmail forwarding (no browser)
-  const matches = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
+  // Pull out any email address mentioned in the prompt
+  const emails = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
   const gmailUser = (process.env.GMAIL_USER || "").toLowerCase();
-  const dest = matches.find(e => e.toLowerCase() !== gmailUser);
+  const dest = emails.find(e => e.toLowerCase() !== gmailUser);
 
+  // 1) Forward last Gmail (no browser)
   if (/gmail|email/i.test(text) && /forward/i.test(text) && dest) {
     return res.json({ flow: { steps: [ { action: "gmail_forward_last", to: dest } ] }, valid: true });
   }
 
-  // Planner for generic browser steps + summarize/email step
+  // 2) Google News fetch-and-email (no browser)
+  if (/google\s*news/i.test(text) && /email/i.test(text) && dest) {
+    // crude query extraction: take text after 'news on' / 'news about' / 'news for'
+    const m = text.match(/news\s+(on|about|for)\s+(.+?)(?:\s+and\s+email|\s+email|\s+to\s+|$)/i);
+    const query = (m?.[2] || text).replace(emails[0]||"", "").trim();
+    return res.json({ flow: { steps: [ { action: "google_news_email", query, to: dest } ] }, valid: true });
+  }
+
+  // 3) Generic browser automation (fallback)
   const sys =
 `Output ONLY JSON: {start_url?: string, steps: Array<
  {action:'goto', url?:string} |
@@ -51,14 +60,16 @@ app.post("/api/plan", async (req,res)=>{
  {action:'type', selector:string, text:string, enter?:boolean} |
  {action:'wait', state:'load'|'domcontentloaded'|'networkidle'} |
  {action:'screenshot'} |
- {action:'summarize_and_email', to:string, note?:string} |
+ {action:'google_news_email', query:string, to:string} |
  {action:'gmail_forward_last', to:string}
 >}
 Rules:
-- If task mentions "email it to <address>" for web results, include a final step:
-  {"action":"summarize_and_email","to":"address"} after navigation/search.
-- Use 'goto' → 'wait' → 'type' (with enter) patterns for searches.
-- No commentary; JSON only.`;
+- If prompt mentions "Google News" and "email to <address>", output ONLY:
+  {"action":"google_news_email","query":"<topic>","to":"<address>"} (no browser steps).
+- If prompt mentions forwarding Gmail, output ONLY:
+  {"action":"gmail_forward_last","to":"<address>"}.
+- Otherwise use normal browser steps (goto/click/type/wait/screenshot).
+- No commentary. JSON only.`;
 
   const r = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -88,7 +99,19 @@ app.post("/api/run", async (req,res)=>{
     const log = (m)=>pushLog(r, m);
 
     try{
-      // Special Gmail action (no browser)
+      // ----- NO-BROWSER ACTIONS -----
+      // Google News → email
+      if (flow.steps?.length === 1 && flow.steps[0].action === "google_news_email") {
+        const s = flow.steps[0];
+        log(`google_news_email "${s.query}" → ${s.to}`);
+        const news = await fetchGoogleNews(s.query);
+        const body = formatNewsEmail(news, s.query);
+        await sendEmail({ to: s.to, subject: `Top Google News on ${s.query}`, text: body });
+        log(`email sent`);
+        r.status = "done";
+        return;
+      }
+      // Forward last Gmail
       if (flow.steps?.length === 1 && flow.steps[0].action === "gmail_forward_last"){
         log(`gmail_forward_last → ${flow.steps[0].to}`);
         await forwardLastEmail(flow.steps[0].to, log);
@@ -96,7 +119,7 @@ app.post("/api/run", async (req,res)=>{
         return;
       }
 
-      // Browser automation
+      // ----- BROWSER AUTOMATION (for other tasks) -----
       const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
       const context = await browser.newContext({
         recordVideo: { dir: "runs" },
@@ -112,7 +135,7 @@ app.post("/api/run", async (req,res)=>{
 
       if (flow.start_url) {
         log("goto " + flow.start_url);
-        await page.goto(flow.start_url, { waitUntil: "domcontentloaded" });
+        await page.goto(flow.start_url, { waitUntil: "domcontentloaded", timeout: 60000 });
         await handleGoogleConsent(page, log);
         await screenshot("after-start");
       }
@@ -121,25 +144,23 @@ app.post("/api/run", async (req,res)=>{
         if (s.action === "goto"){
           const url = s.url || s.text || "";
           log(`[${i}] goto ${url}`);
-          await page.goto(url, { waitUntil: "domcontentloaded" });
+          await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
           await handleGoogleConsent(page, log);
           await screenshot("after-goto");
         } else if (s.action === "click"){
           log(`[${i}] click ${s.selector}`);
-          await page.click(s.selector);
+          await page.click(s.selector, { timeout: 20000 });
           await screenshot("after-click");
         } else if (s.action === "type"){
           log(`[${i}] type ${s.selector}`);
           try{
-            // wait for the field to be visible, then type
-            await page.locator(s.selector).first().waitFor({ state: "visible", timeout: 5000 });
-            await page.fill(s.selector, s.text || "");
+            await page.locator(s.selector).first().waitFor({ state: "visible", timeout: 10000 });
+            await page.fill(s.selector, s.text || "", { timeout: 20000 });
           } catch {
-            // Fallback for Google News: open the search UI then fill
             if (page.url().includes("news.google.")) {
               log(`[${i}] fallback: open search UI`);
-              await page.locator('button[aria-label="Search"]').first().click({ timeout: 2000 }).catch(()=>{});
-              await page.locator('input[aria-label="Search"]').first().fill(s.text || "", { timeout: 5000 }).catch(()=>{});
+              await page.locator('button[aria-label="Search"]').first().click({ timeout: 5000 }).catch(()=>{});
+              await page.locator('input[aria-label="Search"]').first().fill(s.text || "", { timeout: 10000 }).catch(()=>{});
             } else {
               throw new Error(`Unable to type into ${s.selector}`);
             }
@@ -148,19 +169,17 @@ app.post("/api/run", async (req,res)=>{
           await screenshot("after-type");
         } else if (s.action === "wait"){
           log(`[${i}] wait ${s.state}`);
-          await page.waitForLoadState(s.state || "load");
+          await page.waitForLoadState(s.state || "load", { timeout: 60000 });
           await screenshot("after-wait");
         } else if (s.action === "screenshot"){
           log(`[${i}] screenshot`);
           await screenshot("manual");
-        } else if (s.action === "summarize_and_email"){
-          log(`[${i}] summarize_and_email → ${s.to}`);
-          const summary = await summarizePageForEmail(page);
-          await sendEmail({
-            to: s.to,
-            subject: "Requested summary",
-            text: summary
-          });
+        } else if (s.action === "google_news_email"){
+          // If planner mixed it into a longer flow
+          log(`[${i}] google_news_email "${s.query}" → ${s.to}`);
+          const news = await fetchGoogleNews(s.query);
+          const body = formatNewsEmail(news, s.query);
+          await sendEmail({ to: s.to, subject: `Top Google News on ${s.query}`, text: body });
           log(`[${i}] email sent`);
         } else if (s.action === "gmail_forward_last"){
           log(`[${i}] gmail_forward_last → ${s.to}`);
@@ -218,9 +237,7 @@ async function handleGoogleConsent(page, log=()=>{}){
   };
 
   try {
-    // top-level
     if (await tryClick(page)) return;
-    // in iframes
     for (const f of page.frames()){
       if (f === page.mainFrame()) continue;
       if (await tryClick(f)) return;
@@ -228,19 +245,36 @@ async function handleGoogleConsent(page, log=()=>{}){
   } catch {}
 }
 
-// Summarize visible page text and return a short email body
-async function summarizePageForEmail(page){
-  const visibleText = await page.evaluate(()=>document.body.innerText.slice(0, 20000));
-  const prompt = `From the following page text, extract the 5 most relevant recent headlines (with their site names if present). 
-Return plain text bullets like: "- Title — Source". Keep it under 1200 characters.
-Text:
-${visibleText}`;
-  const resp = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.2,
-    messages: [{ role: "system", content: "You write concise, factual bullet summaries." }, { role: "user", content: prompt }]
-  });
-  return resp.choices?.[0]?.message?.content?.trim() || "(no summary)";
+// Fetch top Google News items via public RSS (no browser)
+async function fetchGoogleNews(query, maxItems = 8){
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-GB&gl=GB&ceid=GB:en`;
+  const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  const xml = await resp.text();
+
+  // very small XML parser for items we need
+  const items = [];
+  const parts = xml.split("<item>").slice(1);
+  for (const part of parts){
+    const end = part.indexOf("</item>");
+    const itemXml = end >= 0 ? part.slice(0, end) : part;
+
+    const title = (itemXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/s)?.[1] ||
+                   itemXml.match(/<title>(.*?)<\/title>/s)?.[1] || "").trim();
+
+    const link = (itemXml.match(/<link>(.*?)<\/link>/s)?.[1] || "").trim();
+
+    const source = (itemXml.match(/<source[^>]*>(.*?)<\/source>/s)?.[1] || "").trim();
+
+    if (title && link) items.push({ title, link, source });
+    if (items.length >= maxItems) break;
+  }
+  return items;
+}
+
+function formatNewsEmail(items, query){
+  if (!items.length) return `No recent results for "${query}".`;
+  const lines = items.map(i => `- ${i.title}${i.source ? " — " + i.source : ""}\n  ${i.link}`);
+  return `Here are the top Google News results for "${query}":\n\n` + lines.join("\n") + "\n";
 }
 
 async function sendEmail({ to, subject, text }){
@@ -288,6 +322,7 @@ async function forwardLastEmail(to, log=()=>{}) {
 
   log(`Forwarded with MessageID: ${info.messageId}`);
 }
+
 
 
 
