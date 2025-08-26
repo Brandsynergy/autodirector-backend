@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>AutoDirector</title>
+  <style>
+    :root { --bg:#0b0b0c; --card:#0f0f11; --border:#2b2b2e; --text:#e7e7ea; --muted:#b7b7b9; --brand:#9b5cff; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+    .row { display:flex; gap:12px; align-items:center; }
+    .pill { padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:#151517; }
+    .card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:12px; }
+    textarea, input { width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); }
+    button { padding:10px 14px; border-radius:10px; cursor:pointer; }
+    .btn-primary { border:1px solid var(--brand); background:var(--brand); color:var(--bg); }
+    .btn { border:1px solid var(--border); background:#111114; color:var(--text); }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px; }
+    pre { white-space: pre-wrap; font-size:12px; background:var(--bg); padding:10px; border-radius:8px; max-height:260px; overflow:auto; }
+    .log { background:var(--bg); border:1px solid var(--border); padding:8px; border-radius:8px; font-size:12px; }
+    img, video { width:100%; border-radius:8px; border:1px solid var(--border); }
+    a { color:#7bb7ff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 style="font-size:28px; font-weight:800; margin:0 0 6px; color:var(--brand)">AutoDirector</h1>
+    <div style="font-size:13px; color:var(--muted); margin-bottom:16px">Natural-language → browser automation. GitHub → Render (no Lovable needed).</div>
+
+    <div class="row" style="margin-bottom:16px">
+      <div class="pill">Credits: <b id="credits">—</b></div>
+      <div style="margin-left:auto; font-size:12px; color:#8a8a8f">User: <span id="user"></span></div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:700; margin-bottom:8px">Describe what to automate</div>
+      <textarea id="prompt" placeholder="e.g., Open https://example.com and take a screenshot.">Open https://example.com and take a screenshot.</textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="btn-primary" id="planBtn">Plan Automation</button>
+        <button class="btn" id="runBtn" disabled>Run</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:8px">Planned Flow</div>
+        <pre id="flow">Click “Plan Automation”</pre>
+      </div>
+      <div class="card">
+        <div style="font-weight:700; margin-bottom:8px">Run Console</div>
+        <div id="logs"></div>
+        <div id="shots" class="grid" style="grid-template-columns:1fr 1fr; margin-top:10px"></div>
+        <div id="videoWrap" style="margin-top:10px; display:none">
+          <video id="video" controls></video>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const BACKEND = ""; // same origin
+  let userId = localStorage.getItem("autodirector_user");
+  if(!userId){ userId = crypto.randomUUID(); localStorage.setItem("autodirector_user", userId); }
+  document.getElementById("user").textContent = userId.slice(0,8) + "…";
+
+  async function getCredits(){
+    const r = await fetch(`/api/user`, { headers: { "x-anon-id": userId }});
+    const j = await r.json();
+    document.getElementById("credits").textContent = j.credits ?? "—";
+  }
+  getCredits();
+
+  let plannedFlow = null;
+  document.getElementById("planBtn").onclick = async ()=>{
+    const prompt = document.getElementById("prompt").value;
+    document.getElementById("flow").textContent = "Planning…";
+    const r = await fetch(`/api/plan`, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "x-anon-id": userId },
+      body: JSON.stringify({ prompt })
+    });
+    const j = await r.json();
+    plannedFlow = j.flow;
+    document.getElementById("flow").textContent = JSON.stringify(j.flow, null, 2);
+    document.getElementById("runBtn").disabled = !j.valid;
+  };
+
+  document.getElementById("runBtn").onclick = async ()=>{
+    if(!plannedFlow) return;
+    const logs = document.getElementById("logs");
+    const shots = document.getElementById("shots");
+    const videoWrap = document.getElementById("videoWrap");
+    const video = document.getElementById("video");
+    logs.innerHTML = ""; shots.innerHTML = ""; videoWrap.style.display = "none"; video.removeAttribute("src");
+
+    const r = await fetch(`/api/run`, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "x-anon-id": userId },
+      body: JSON.stringify({ flow: plannedFlow })
+    });
+    if(!r.ok){ alert("Run error: " + await r.text()); return; }
+    const j = await r.json();
+    poll(j.id);
+  };
+
+  function addLog(s){
+    const div = document.createElement("div");
+    div.className = "log"; div.textContent = s;
+    document.getElementById("logs").appendChild(div);
+  }
+
+  function poll(id){
+    const timer = setInterval(async ()=>{
+      const r = await fetch(`/api/run/${id}`, { headers:{ "x-anon-id": userId }});
+      if(!r.ok){ clearInterval(timer); return; }
+      const j = await r.json();
+      document.getElementById("credits").textContent = j.credits_after ?? "—";
+
+      const logs = document.getElementById("logs");
+      logs.innerHTML = "";
+      (j.logs||[]).forEach(x => addLog(x));
+
+      const shots = document.getElementById("shots");
+      shots.innerHTML = "";
+      (j.screens || j.shots || []).forEach(s=>{
+        const a = document.createElement("a");
+        a.href = s.url; a.target = "_blank";
+        const img = document.createElement("img");
+        img.src = s.url; a.appendChild(img);
+        shots.appendChild(a);
+      });
+
+      if(j.video_url || j.videoUrl){
+        document.getElementById("videoWrap").style.display = "block";
+        const v = j.video_url || j.videoUrl;
+        document.getElementById("video").innerHTML = `<source src="${v}" type="video/webm">`;
+      }
+
+      if(j.status === "done" || j.status === "error"){ clearInterval(timer); }
+    }, 1200);
+  }
+</script>
+</body>
+</html>
