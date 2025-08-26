@@ -9,9 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import OpenAI from "openai";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
-// Cheerio: use named export "load"
 import { load as cheerioLoad } from "cheerio";
-// CSV writer
 import { stringify as csvStringify } from "csv-stringify";
 
 const app = express();
@@ -23,13 +21,11 @@ app.use("/", express.static("public"));
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const FREE_CREDITS = Number(process.env.FREE_CREDITS_ON_SIGNUP || 300);
 
-// simple in-memory
 const users = new Map(); // id -> { credits }
 const runs  = new Map(); // id -> { status, logs, shots, videoUrl }
 const pushLog = (r, m) => r.logs.push(new Date().toISOString()+" "+m);
 const ensureUser = (id) => { if(!users.has(id)) users.set(id, { credits: FREE_CREDITS }); return users.get(id); };
 
-// file persistence (JSON stores)
 const storesDir = "runs";
 const files = {
   monitors: path.join(storesDir, "monitors.json"),
@@ -42,7 +38,7 @@ await fsp.mkdir(storesDir, { recursive: true });
 async function loadJSON(p, d){ try { return JSON.parse(await fsp.readFile(p, "utf8")); } catch { return d; } }
 async function saveJSON(p, obj){ await fsp.writeFile(p, JSON.stringify(obj, null, 2)); }
 
-// email helper
+// ---- email helper
 async function sendEmail({ to, subject, text, html, attachments }){
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
@@ -69,10 +65,9 @@ app.post("/api/plan", async (req,res)=>{
   const emails = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
   const me = (process.env.GMAIL_USER || "").toLowerCase();
   const target = emails.find(e => e.toLowerCase() !== me);
-
   const urlMatch = text.match(/https?:\/\/\S+/i);
 
-  // A1 Screenshot
+  // A1 Screenshot (direct)
   if (/(screenshot|snapshot)/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "screenshot_url", url: urlMatch[0], to: target } ] }, valid: true });
   }
@@ -82,7 +77,7 @@ app.post("/api/plan", async (req,res)=>{
     return res.json({ flow: { steps: [ { action: "pdf_url", url: urlMatch[0], to: target } ] }, valid: true });
   }
 
-  // A4 Google News briefing now (one-off)
+  // A4 Google News → email
   if (/google\s*news/i.test(text) && /email/i.test(text) && target){
     const m = text.match(/news\s+(on|about|for)\s+(.+?)(?:\s+to|\s+and|\s+at|$)/i);
     const query = (m?.[2] || text).replace(emails[0]||"", "").trim();
@@ -94,7 +89,7 @@ app.post("/api/plan", async (req,res)=>{
     return res.json({ flow: { steps: [ { action: "gmail_forward_last", to: target } ] }, valid: true });
   }
 
-  // Scheduling intents (A3, A4 weekly/daily, A5, A6)
+  // Scheduling intents (A3/A4/A5/A6)
   if (/monitor|change\s*watch|track/i.test(text) && urlMatch && target){
     return res.json({ flow: { steps: [ { action: "monitor_add", url: urlMatch[0], to: target } ] }, valid: true });
   }
@@ -105,7 +100,7 @@ app.post("/api/plan", async (req,res)=>{
     return res.json({ flow: { steps: [ { action: "briefing_add", topic: query, to: target, frequency: freq } ] }, valid: true });
   }
   if (/competitor/i.test(text) && /rss|feed|url/i.test(text) && target){
-    return res.json({ flow: { steps: [ { action: "compwatch_add", feeds: emails.length ? [] : [], to: target } ] }, valid: true });
+    return res.json({ flow: { steps: [ { action: "compwatch_add", feeds: [], to: target } ] }, valid: true });
   }
   if (/job/i.test(text) && /alert/i.test(text) && target){
     return res.json({ flow: { steps: [ { action: "jobalert_add", keywords: "ai", feeds: [], to: target } ] }, valid: true });
@@ -122,7 +117,7 @@ app.post("/api/plan", async (req,res)=>{
     return res.json({ flow: { steps: [ { action: "seo_snapshot", keyword: kw, to: target } ] }, valid: true });
   }
 
-  // A9 Uptime/content check now
+  // A9 Uptime/content check
   if (/(uptime|status|check)/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "uptime_check", url: urlMatch[0], to: target } ] }, valid: true });
   }
@@ -135,6 +130,7 @@ app.post("/api/plan", async (req,res)=>{
  {action:'type', selector:string, text:string, enter?:boolean} |
  {action:'wait', state:'load'|'domcontentloaded'|'networkidle'} |
  {action:'screenshot'} |
+ {action:'email_shots', to:string} |
  {action:'screenshot_url', url:string, to?:string} |
  {action:'pdf_url', url:string, to?:string} |
  {action:'monitor_add', url:string, to:string} |
@@ -149,7 +145,7 @@ app.post("/api/plan", async (req,res)=>{
 >}
 Rules:
 - Prefer no-browser actions when available.
-- Use *_add actions for schedules (daily/weekly).
+- If user says "screenshot ... email", ensure 'email_shots' is included after screenshots.
 - JSON only.`;
 
   const r = await openai.chat.completions.create({
@@ -162,6 +158,12 @@ Rules:
   let flow; try { flow = JSON.parse(r.choices?.[0]?.message?.content || "{}"); } catch { flow = {}; }
   if (!Array.isArray(flow.steps) && flow.action) flow = { steps: [flow] };
   if (!Array.isArray(flow.steps)) flow = { steps: [] };
+
+  // 🚀 Auto-append email_shots when the prompt says "screenshot ... email"
+  if (/screenshot/i.test(text) && target && !flow.steps.some(s=>s.action==="email_shots")){
+    flow.steps.push({ action: "email_shots", to: target });
+  }
+
   res.json({ flow, valid: flow.steps.length > 0 });
 });
 
@@ -183,7 +185,7 @@ app.post("/api/run", async (req,res)=>{
     const log = (m)=>pushLog(r, m);
 
     try{
-      // ----- NO-BROWSER ONE-SHOT ACTIONS -----
+      // ----- ONE-SHOT ACTIONS (no browser) -----
       const only = flow.steps.length === 1 ? flow.steps[0] : null;
 
       if (only?.action === "google_news_email"){
@@ -244,39 +246,7 @@ app.post("/api/run", async (req,res)=>{
         r.status = "done"; return;
       }
 
-      if (only?.action === "briefing_add"){
-        const briefings = await loadJSON(files.briefings, []);
-        briefings.push({ topic: only.topic, to: only.to, frequency: only.frequency||"daily", next_run: null });
-        await saveJSON(files.briefings, briefings);
-        log(`briefing saved: ${only.topic} (${only.frequency}) → ${only.to}`);
-        r.status = "done"; return;
-      }
-
-      if (only?.action === "monitor_add"){
-        const monitors = await loadJSON(files.monitors, []);
-        monitors.push({ url: only.url, to: only.to, last_hash: null });
-        await saveJSON(files.monitors, monitors);
-        log(`monitor saved: ${only.url} → ${only.to}`);
-        r.status = "done"; return;
-      }
-
-      if (only?.action === "jobalert_add"){
-        const jobs = await loadJSON(files.jobalerts, []);
-        jobs.push({ to: only.to, keywords: Array.isArray(only.keywords) ? only.keywords : String(only.keywords||"").split(",").map(s=>s.trim()).filter(Boolean), feeds: only.feeds||[] });
-        await saveJSON(files.jobalerts, jobs);
-        log(`job alert saved for ${only.to}`);
-        r.status = "done"; return;
-      }
-
-      if (only?.action === "compwatch_add"){
-        const cw = await loadJSON(files.compwatch, []);
-        cw.push({ to: only.to, feeds: only.feeds||[] });
-        await saveJSON(files.compwatch, cw);
-        log(`competitor watch saved for ${only.to}`);
-        r.status = "done"; return;
-      }
-
-      // ----- BROWSER AUTOMATION (generic tasks) -----
+      // ----- BROWSER AUTOMATION -----
       const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
       const context = await browser.newContext({
         recordVideo: { dir: "runs" },
@@ -292,12 +262,23 @@ app.post("/api/run", async (req,res)=>{
 
       if (flow.start_url) { await page.goto(flow.start_url, { waitUntil: "domcontentloaded", timeout: 60000 }); await screenshot("after-start"); }
 
-      for (const [i,s] of flow.steps.entries()){
+      for (const s of flow.steps){
         if (s.action === "goto"){ await page.goto(s.url || s.text || "", { waitUntil: "domcontentloaded", timeout: 60000 }); await screenshot("after-goto"); }
         else if (s.action === "click"){ await page.click(s.selector, { timeout: 20000 }); await screenshot("after-click"); }
         else if (s.action === "type"){ await page.locator(s.selector).first().waitFor({ state: "visible", timeout: 10000 }); await page.fill(s.selector, s.text||"", { timeout: 20000 }); if (s.enter) await page.keyboard.press("Enter"); await screenshot("after-type"); }
         else if (s.action === "wait"){ await page.waitForLoadState(s.state || "load", { timeout: 60000 }); await screenshot("after-wait"); }
         else if (s.action === "screenshot"){ await screenshot("manual"); }
+        else if (s.action === "gmail_forward_last"){ await forwardLastEmail(s.to, log); }
+        else if (s.action === "email_shots"){
+          const files = r.shots.map(o => o.url.replace(/^\//,""));
+          await sendEmail({
+            to: s.to,
+            subject: s.subject || "Screenshots from AutoDirector",
+            text: files.length ? "See attached screenshots." : "No screenshots were captured.",
+            attachments: files.map(p => ({ path: p, filename: path.basename(p) }))
+          });
+          log(`email_shots sent to ${s.to} (${files.length} attachments)`);
+        }
       }
 
       const v = await page.video()?.path().catch(()=>null);
@@ -320,8 +301,6 @@ app.get("/api/run/:id", (req,res)=>{
 });
 
 // ---------- CRON RUNNERS ----------
-
-// A3: monitors
 app.get("/api/monitors/run", async (_req,res)=>{
   const monitors = await loadJSON(files.monitors, []);
   let processed = 0, changed = 0;
@@ -340,7 +319,6 @@ app.get("/api/monitors/run", async (_req,res)=>{
   res.json({ ok:true, processed, changed });
 });
 
-// A4: briefings (daily/weekly)
 app.get("/api/briefings/run", async (_req,res)=>{
   const briefings = await loadJSON(files.briefings, []);
   let sent = 0;
@@ -353,7 +331,6 @@ app.get("/api/briefings/run", async (_req,res)=>{
   res.json({ ok:true, sent });
 });
 
-// A5: competitor watch (RSS list)
 app.get("/api/compwatch/run", async (_req,res)=>{
   const cw = await loadJSON(files.compwatch, []);
   let sent = 0;
@@ -371,7 +348,6 @@ app.get("/api/compwatch/run", async (_req,res)=>{
   res.json({ ok:true, sent });
 });
 
-// A6: job alerts
 app.get("/api/jobalerts/run", async (_req,res)=>{
   const js = await loadJSON(files.jobalerts, []);
   let sent = 0;
@@ -391,17 +367,7 @@ app.get("/api/jobalerts/run", async (_req,res)=>{
   res.json({ ok:true, sent });
 });
 
-// A10: inbox digest example
-app.get("/api/inbox/digest", async (_req,res)=>{
-  const to = process.env.GMAIL_USER;
-  const body = await gmailDigestText({ hours: 24 });
-  await sendEmail({ to, subject: "Daily inbox digest (last 24h)", text: body });
-  res.json({ ok:true });
-});
-
-// ---------- helpers: actions ----------
-
-// A1
+// ---------- helpers ----------
 async function screenshotURL(url){
   const id = uuidv4();
   const out = path.join("runs", `${id}-shot.png`);
@@ -413,8 +379,6 @@ async function screenshotURL(url){
   await browser.close();
   return out;
 }
-
-// A2
 async function pdfURL(url){
   const id = uuidv4();
   const out = path.join("runs", `${id}.pdf`);
@@ -426,8 +390,6 @@ async function pdfURL(url){
   await browser.close();
   return out;
 }
-
-// A8
 async function seoSnapshotEmailBody(keyword){
   const key = process.env.SERPAPI_KEY; // optional
   let lines = [`Keyword: ${keyword}`, ""];
@@ -442,29 +404,23 @@ async function seoSnapshotEmailBody(keyword){
     results.forEach((r,i)=>lines.push(`${i+1}. ${r.title}\n   ${r.link}`));
     return lines.join("\n") || "No results.";
   } else {
-    // fallback: Google News RSS as proxy snapshot
     const items = await fetchGoogleNews(keyword, 10);
     items.forEach((i,idx)=>lines.push(`${idx+1}. ${i.title}${i.source ? " — "+i.source:""}\n   ${i.link}`));
     lines.push("\n(Set SERPAPI_KEY to get standard Google results.)");
     return lines.join("\n");
   }
 }
-
-// A7
 async function extractToCSV(url, selector){
   const html = await (await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }})).text();
   const $ = cheerioLoad(html);
   const rows = [];
   const emails = new Set();
-
   $(selector).each((_,el)=>{
     const text = $(el).text().trim();
     const href = $(el).attr("href") || "";
     rows.push({ text, href });
   });
-
   (html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).forEach(e => emails.add(e));
-
   const id = uuidv4();
   const csvPath = path.join("runs", `${id}.csv`);
   await new Promise((resolve,reject)=>{
@@ -473,15 +429,9 @@ async function extractToCSV(url, selector){
     s.on("error", reject); w.on("error", reject); w.on("finish", resolve);
     s.pipe(w);
   });
-
-  if (emails.size){
-    await fsp.appendFile(csvPath, `\n\nemails\n${[...emails].join("\n")}\n`);
-  }
-
+  if (emails.size){ await fsp.appendFile(csvPath, `\n\nemails\n${[...emails].join("\n")}\n`); }
   return { csvPath, count: rows.length, emails: emails.size };
 }
-
-// A9
 async function uptimeCheck({ url, expect_selector, expect_text }){
   try{
     const r = await fetch(url, { redirect: "follow" });
@@ -495,12 +445,8 @@ async function uptimeCheck({ url, expect_selector, expect_text }){
       if (!$(expect_selector).length) return { ok:false, message:`Selector not found: ${expect_selector}` };
     }
     return { ok:true, message:`OK ${url}` };
-  }catch(e){
-    return { ok:false, message:`Error ${e.message}` };
-  }
+  }catch(e){ return { ok:false, message:`Error ${e.message}` }; }
 }
-
-// A4 (and used in A8 fallback)
 async function fetchGoogleNews(query, maxItems = 8){
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-GB&gl=GB&ceid=GB:en`;
   const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
@@ -524,8 +470,6 @@ function formatNewsEmail(items, query){
   const lines = items.map(i => `- ${i.title}${i.source ? " — " + i.source : ""}\n  ${i.link}`);
   return `Top Google News for "${query}":\n\n` + lines.join("\n") + "\n";
 }
-
-// Simple RSS fetcher for generic feeds (used by compwatch & jobalerts)
 async function fetchRSS(url, maxItems = 10){
   const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
   const xml = await resp.text();
@@ -542,17 +486,14 @@ async function fetchRSS(url, maxItems = 10){
   }
   return items;
 }
-
-// A10
 async function gmailDigestText({ hours = 24 } = {}){
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
-
   const since = Date.now() - hours*3600_000;
   const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
   await imap.connect();
-  const box = await imap.selectMailbox("INBOX");
+  await imap.selectMailbox("INBOX");
   let lines = [];
   for await (const msg of imap.fetch({ seen:false }, { envelope:true, internalDate:true }, { uid:true })){
     if (new Date(msg.internalDate).getTime() >= since){
@@ -562,12 +503,10 @@ async function gmailDigestText({ hours = 24 } = {}){
   await imap.logout();
   return lines.length ? lines.join("\n") : "No new mail in the last 24h.";
 }
-
 async function forwardLastEmail(to, log=()=>{}) {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
-
   const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
   await imap.connect();
   const box = await imap.selectMailbox("INBOX");
@@ -577,13 +516,13 @@ async function forwardLastEmail(to, log=()=>{}) {
   const subject = (msg?.envelope?.subject) || "(no subject)";
   const raw = msg?.source?.toString("utf8") || "";
   await imap.logout();
-
   await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded message (raw below):\n\n${raw.slice(0, 100000)}` });
 }
 
 // ---------- boot ----------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
+
 
 
 
