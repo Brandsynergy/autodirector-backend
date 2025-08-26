@@ -9,7 +9,9 @@ import { v4 as uuidv4 } from "uuid";
 import OpenAI from "openai";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
+// Cheerio: use named export "load"
 import { load as cheerioLoad } from "cheerio";
+// CSV writer
 import { stringify as csvStringify } from "csv-stringify";
 
 const app = express();
@@ -68,7 +70,6 @@ app.post("/api/plan", async (req,res)=>{
   const me = (process.env.GMAIL_USER || "").toLowerCase();
   const target = emails.find(e => e.toLowerCase() !== me);
 
-  // quick intent heuristics (no LLM needed for common cases)
   const urlMatch = text.match(/https?:\/\/\S+/i);
 
   // A1 Screenshot
@@ -441,6 +442,7 @@ async function seoSnapshotEmailBody(keyword){
     results.forEach((r,i)=>lines.push(`${i+1}. ${r.title}\n   ${r.link}`));
     return lines.join("\n") || "No results.";
   } else {
+    // fallback: Google News RSS as proxy snapshot
     const items = await fetchGoogleNews(keyword, 10);
     items.forEach((i,idx)=>lines.push(`${idx+1}. ${i.title}${i.source ? " — "+i.source:""}\n   ${i.link}`));
     lines.push("\n(Set SERPAPI_KEY to get standard Google results.)");
@@ -523,6 +525,24 @@ function formatNewsEmail(items, query){
   return `Top Google News for "${query}":\n\n` + lines.join("\n") + "\n";
 }
 
+// Simple RSS fetcher for generic feeds (used by compwatch & jobalerts)
+async function fetchRSS(url, maxItems = 10){
+  const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  const xml = await resp.text();
+  const items = [];
+  const parts = xml.split("<item>").slice(1);
+  for (const part of parts){
+    const end = part.indexOf("</item>");
+    const itemXml = end >= 0 ? part.slice(0, end) : part;
+    const title = (itemXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/s)?.[1] ||
+                   itemXml.match(/<title>(.*?)<\/title>/s)?.[1] || "").trim();
+    const link = (itemXml.match(/<link>(.*?)<\/link>/s)?.[1] || "").trim();
+    if (title && link) items.push({ title, link });
+    if (items.length >= maxItems) break;
+  }
+  return items;
+}
+
 // A10
 async function gmailDigestText({ hours = 24 } = {}){
   const user = process.env.GMAIL_USER;
@@ -544,7 +564,27 @@ async function gmailDigestText({ hours = 24 } = {}){
 }
 
 async function forwardLastEmail(to, log=()=>{}) {
-  const user
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
+  if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
+
+  const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
+  await imap.connect();
+  const box = await imap.selectMailbox("INBOX");
+  if (!box.exists) { await imap.logout(); throw new Error("No messages in INBOX"); }
+  const seq = box.exists;
+  const msg = await imap.fetchOne(seq, { envelope: true, source: true });
+  const subject = (msg?.envelope?.subject) || "(no subject)";
+  const raw = msg?.source?.toString("utf8") || "";
+  await imap.logout();
+
+  await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded message (raw below):\n\n${raw.slice(0, 100000)}` });
+}
+
+// ---------- boot ----------
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
+
 
 
 
