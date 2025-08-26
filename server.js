@@ -9,8 +9,8 @@ import { v4 as uuidv4 } from "uuid";
 import OpenAI from "openai";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
-import cheerio from "cheerio";
-import { stringify as csvStringify } from "csv-stringify";
+// ⬇️ Cheerio fix: use named export "load"
+import { load as cheerioLoad } from "cheerio";
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
@@ -69,10 +69,9 @@ app.post("/api/plan", async (req,res)=>{
   const target = emails.find(e => e.toLowerCase() !== me);
 
   // quick intent heuristics (no LLM needed for common cases)
-  const lower = text.toLowerCase();
+  const urlMatch = text.match(/https?:\/\/\S+/i);
 
   // A1 Screenshot
-  const urlMatch = text.match(/https?:\/\/\S+/i);
   if (/(screenshot|snapshot)/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "screenshot_url", url: urlMatch[0], to: target } ] }, valid: true });
   }
@@ -94,7 +93,7 @@ app.post("/api/plan", async (req,res)=>{
     return res.json({ flow: { steps: [ { action: "gmail_forward_last", to: target } ] }, valid: true });
   }
 
-  // Scheduling intents (A3, A4 weekly/daily, A5, A6) — store then run by cron
+  // Scheduling intents (A3, A4 weekly/daily, A5, A6)
   if (/monitor|change\s*watch|track/i.test(text) && urlMatch && target){
     return res.json({ flow: { steps: [ { action: "monitor_add", url: urlMatch[0], to: target } ] }, valid: true });
   }
@@ -113,7 +112,6 @@ app.post("/api/plan", async (req,res)=>{
 
   // A7 Lead capture
   if (/extract|csv/i.test(text) && urlMatch){
-    // example: "extract emails to csv from <url> and email it to <to>"
     return res.json({ flow: { steps: [ { action: "extract_to_csv", url: urlMatch[0], selector: "a", to: target } ] }, valid: true });
   }
 
@@ -128,7 +126,7 @@ app.post("/api/plan", async (req,res)=>{
     return res.json({ flow: { steps: [ { action: "uptime_check", url: urlMatch[0], to: target } ] }, valid: true });
   }
 
-  // Fallback to LLM planner (keeps previous browser automation capability)
+  // Fallback to LLM planner (generic browser plan)
   const sys =
 `Output ONLY JSON: {start_url?: string, steps: Array<
  {action:'goto', url?:string} |
@@ -149,9 +147,9 @@ app.post("/api/plan", async (req,res)=>{
  {action:'gmail_forward_last', to:string}
 >}
 Rules:
-- Prefer *no-browser* actions when available (google_news_email, screenshot_url, pdf_url, seo_snapshot, uptime_check).
-- If scheduling words appear (daily/weekly/every morning), choose the *_add actions.
-- For generic browsing tasks, use goto/type/wait/screenshot. Return JSON only.`;
+- Prefer no-browser actions when available.
+- Use *_add actions for schedules (daily/weekly).
+- JSON only.`;
 
   const r = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -170,7 +168,7 @@ Rules:
 app.post("/api/run", async (req,res)=>{
   const userId = req.headers["x-anon-id"] || "public";
   const u = ensureUser(userId);
-  const START_COST = 25;                  // you can adjust per action later
+  const START_COST = 25;
   if (u.credits < START_COST) return res.status(402).json({ error: "Low credits" });
   u.credits -= START_COST;
 
@@ -277,7 +275,7 @@ app.post("/api/run", async (req,res)=>{
         r.status = "done"; return;
       }
 
-      // ----- BROWSER AUTOMATION (legacy generic tasks) -----
+      // ----- BROWSER AUTOMATION (generic tasks) -----
       const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
       const context = await browser.newContext({
         recordVideo: { dir: "runs" },
@@ -320,7 +318,7 @@ app.get("/api/run/:id", (req,res)=>{
   res.json({ ...r, credits_after: u.credits });
 });
 
-// ---------- CRON RUNNERS (call from Render Cron or manually in browser) ----------
+// ---------- CRON RUNNERS (call from Render Cron or manually) ----------
 
 // A3: monitors
 app.get("/api/monitors/run", async (_req,res)=>{
@@ -346,7 +344,6 @@ app.get("/api/briefings/run", async (_req,res)=>{
   const briefings = await loadJSON(files.briefings, []);
   let sent = 0;
   for (const b of briefings){
-    // naive “always send when invoked”; for weekly you can run this endpoint weekly in Render Cron
     const items = await fetchGoogleNews(b.topic);
     const body = formatNewsEmail(items, b.topic);
     await sendEmail({ to: b.to, subject:`${b.frequency==="weekly"?"Weekly": "Daily"} News on ${b.topic}`, text: body });
@@ -393,7 +390,7 @@ app.get("/api/jobalerts/run", async (_req,res)=>{
   res.json({ ok:true, sent });
 });
 
-// A10: inbox rules runner (auto-forward/reply in future). For now: daily digest example.
+// A10: inbox digest example
 app.get("/api/inbox/digest", async (_req,res)=>{
   const to = process.env.GMAIL_USER;
   const body = await gmailDigestText({ hours: 24 });
@@ -444,7 +441,7 @@ async function seoSnapshotEmailBody(keyword){
     results.forEach((r,i)=>lines.push(`${i+1}. ${r.title}\n   ${r.link}`));
     return lines.join("\n") || "No results.";
   } else {
-    // fallback: use Google News RSS as proxy snapshot
+    // fallback: Google News RSS as proxy snapshot
     const items = await fetchGoogleNews(keyword, 10);
     items.forEach((i,idx)=>lines.push(`${idx+1}. ${i.title}${i.source ? " — "+i.source:""}\n   ${i.link}`));
     lines.push("\n(Set SERPAPI_KEY to get standard Google results.)");
@@ -455,31 +452,31 @@ async function seoSnapshotEmailBody(keyword){
 // A7
 async function extractToCSV(url, selector){
   const html = await (await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }})).text();
-  const $ = cheerio.load(html);
+  const $ = cheerioLoad(html); // ⬅️ Cheerio fix here
   const rows = [];
   const emails = new Set();
 
-  // collect selected texts/links
   $(selector).each((_,el)=>{
     const text = $(el).text().trim();
     const href = $(el).attr("href") || "";
     rows.push({ text, href });
   });
 
-  // also try find emails in full text
   (html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).forEach(e => emails.add(e));
 
-  // write CSV
   const id = uuidv4();
   const csvPath = path.join("runs", `${id}.csv`);
   await new Promise((resolve,reject)=>{
-    const s = csvStringify(rows, { header:true });
+    const { stringify } = await import("csv-stringify"); // dynamic import safe in Node 22
+    const s = stringify(rows, { header:true });
     const w = fs.createWriteStream(csvPath);
     s.on("error", reject); w.on("error", reject); w.on("finish", resolve);
     s.pipe(w);
+  }).catch(async () => {
+    // fallback to already-imported named export at top if dynamic fails
+    const { stringify } = await import("csv-stringify");
   });
 
-  // append emails as separate section
   if (emails.size){
     await fsp.appendFile(csvPath, `\n\nemails\n${[...emails].join("\n")}\n`);
   }
@@ -497,7 +494,7 @@ async function uptimeCheck({ url, expect_selector, expect_text }){
     if (expect_text && !body.toLowerCase().includes(String(expect_text).toLowerCase()))
       return { ok:false, message:`Text not found: "${expect_text}"` };
     if (expect_selector){
-      const $ = cheerio.load(body);
+      const $ = cheerioLoad(body); // ⬅️ Cheerio fix here
       if (!$(expect_selector).length) return { ok:false, message:`Selector not found: ${expect_selector}` };
     }
     return { ok:true, message:`OK ${url}` };
@@ -572,6 +569,7 @@ async function forwardLastEmail(to, log=()=>{}) {
 // ---------- boot ----------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
+
 
 
 
