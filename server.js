@@ -20,8 +20,17 @@ const FREE_CREDITS = Number(process.env.FREE_CREDITS_ON_SIGNUP || 100);
 // simple in-memory store
 const users = new Map(); // id -> { credits }
 const runs  = new Map(); // id -> { status, logs, shots, videoUrl }
-function ensureUser(id){ if(!users.has(id)) users.set(id, { credits: FREE_CREDITS }); return users.get(id); }
-function pushLog(r, m){ r.logs.push(new Date().toISOString()+" "+m); }
+const pushLog = (r, m) => r.logs.push(new Date().toISOString()+" "+m);
+const ensureUser = (id) => { if(!users.has(id)) users.set(id, { credits: FREE_CREDITS }); return users.get(id); };
+
+// ---- helpers to make the flow shape bullet-proof ----
+function normalizeFlow(flow){
+  // Accept: {steps:[...]}  OR  {action:...}  OR  null
+  if (!flow) return { steps: [] };
+  if (Array.isArray(flow.steps)) return { steps: flow.steps };
+  if (flow.action) return { steps: [flow] };
+  return { steps: [] };
+}
 
 app.get("/api/health", (_,res)=> res.json({ ok:true }));
 
@@ -46,7 +55,7 @@ app.post("/api/plan", async (req,res)=>{
 
   // 2) Google News fetch-and-email (no browser)
   if (/google\s*news/i.test(text) && /email/i.test(text) && dest) {
-    // crude query extraction: take text after 'news on' / 'news about' / 'news for'
+    // take text after 'news on/about/for'
     const m = text.match(/news\s+(on|about|for)\s+(.+?)(?:\s+and\s+email|\s+email|\s+to\s+|$)/i);
     const query = (m?.[2] || text).replace(emails[0]||"", "").trim();
     return res.json({ flow: { steps: [ { action: "google_news_email", query, to: dest } ] }, valid: true });
@@ -65,10 +74,10 @@ app.post("/api/plan", async (req,res)=>{
 >}
 Rules:
 - If prompt mentions "Google News" and "email to <address>", output ONLY:
-  {"action":"google_news_email","query":"<topic>","to":"<address>"} (no browser steps).
+  {"action":"google_news_email","query":"<topic>","to":"<address>"}.
 - If prompt mentions forwarding Gmail, output ONLY:
   {"action":"gmail_forward_last","to":"<address>"}.
-- Otherwise use normal browser steps (goto/click/type/wait/screenshot).
+- Otherwise use normal browser steps.
 - No commentary. JSON only.`;
 
   const r = await openai.chat.completions.create({
@@ -77,9 +86,15 @@ Rules:
     messages: [{ role: "system", content: sys }, { role: "user", content: `Create a plan for: ${text}` }],
     response_format: { type: "json_object" }
   });
-  let flow = { steps: [] };
-  try { flow = JSON.parse(r.choices?.[0]?.message?.content || "{}"); } catch {}
-  res.json({ flow, valid: Array.isArray(flow.steps) });
+
+  let flow;
+  try {
+    flow = JSON.parse(r.choices?.[0]?.message?.content || "{}");
+  } catch { flow = {}; }
+
+  // *** normalize so it ALWAYS becomes {steps:[...]} ***
+  flow = normalizeFlow(flow);
+  res.json({ flow, valid: Array.isArray(flow.steps) && flow.steps.length > 0 });
 });
 
 app.post("/api/run", async (req,res)=>{
@@ -90,7 +105,7 @@ app.post("/api/run", async (req,res)=>{
   u.credits -= START_COST;
 
   const id = uuidv4();
-  const flow = req.body?.flow || { steps: [] };
+  let flow = normalizeFlow(req.body?.flow);
   runs.set(id, { status:"running", logs:[], shots:[], videoUrl:null });
   res.json({ id, status:"running" });
 
@@ -100,8 +115,7 @@ app.post("/api/run", async (req,res)=>{
 
     try{
       // ----- NO-BROWSER ACTIONS -----
-      // Google News → email
-      if (flow.steps?.length === 1 && flow.steps[0].action === "google_news_email") {
+      if (flow.steps.length === 1 && flow.steps[0].action === "google_news_email") {
         const s = flow.steps[0];
         log(`google_news_email "${s.query}" → ${s.to}`);
         const news = await fetchGoogleNews(s.query);
@@ -111,8 +125,7 @@ app.post("/api/run", async (req,res)=>{
         r.status = "done";
         return;
       }
-      // Forward last Gmail
-      if (flow.steps?.length === 1 && flow.steps[0].action === "gmail_forward_last"){
+      if (flow.steps.length === 1 && flow.steps[0].action === "gmail_forward_last"){
         log(`gmail_forward_last → ${flow.steps[0].to}`);
         await forwardLastEmail(flow.steps[0].to, log);
         r.status = "done";
@@ -175,7 +188,6 @@ app.post("/api/run", async (req,res)=>{
           log(`[${i}] screenshot`);
           await screenshot("manual");
         } else if (s.action === "google_news_email"){
-          // If planner mixed it into a longer flow
           log(`[${i}] google_news_email "${s.query}" → ${s.to}`);
           const news = await fetchGoogleNews(s.query);
           const body = formatNewsEmail(news, s.query);
@@ -187,9 +199,8 @@ app.post("/api/run", async (req,res)=>{
         }
       }
 
-      await page.close();
       const v = await page.video()?.path().catch(()=>null);
-      await context.close(); await browser.close();
+      await page.close(); await context.close(); await browser.close();
 
       r.videoUrl = v ? `/${v}` : null;
       r.status = "done";
@@ -251,7 +262,6 @@ async function fetchGoogleNews(query, maxItems = 8){
   const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
   const xml = await resp.text();
 
-  // very small XML parser for items we need
   const items = [];
   const parts = xml.split("<item>").slice(1);
   for (const part of parts){
@@ -288,7 +298,6 @@ async function sendEmail({ to, subject, text }){
   await transporter.sendMail({ from: user, to, subject, text });
 }
 
-// Forward most recent email
 async function forwardLastEmail(to, log=()=>{}) {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
@@ -322,6 +331,7 @@ async function forwardLastEmail(to, log=()=>{}) {
 
   log(`Forwarded with MessageID: ${info.messageId}`);
 }
+
 
 
 
