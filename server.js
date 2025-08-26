@@ -38,7 +38,7 @@ await fsp.mkdir(storesDir, { recursive: true });
 async function loadJSON(p, d){ try { return JSON.parse(await fsp.readFile(p, "utf8")); } catch { return d; } }
 async function saveJSON(p, obj){ await fsp.writeFile(p, JSON.stringify(obj, null, 2)); }
 
-// ---- email helper
+// ---------- email helper ----------
 async function sendEmail({ to, subject, text, html, attachments }){
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
@@ -61,35 +61,40 @@ app.get("/api/user", (req,res)=>{
 app.post("/api/plan", async (req,res)=>{
   const text = (req.body?.prompt || "").slice(0, 1000);
 
-  // detect target email in free text
+  // detect target email
   const emails = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
   const me = (process.env.GMAIL_USER || "").toLowerCase();
   const target = emails.find(e => e.toLowerCase() !== me);
+
   const urlMatch = text.match(/https?:\/\/\S+/i);
 
-  // A1 Screenshot (direct)
+  // Direct screenshot
   if (/(screenshot|snapshot)/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "screenshot_url", url: urlMatch[0], to: target } ] }, valid: true });
   }
-
-  // A2 PDF
+  // Direct PDF
   if (/\b(pdf|save as pdf)\b/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "pdf_url", url: urlMatch[0], to: target } ] }, valid: true });
   }
-
-  // A4 Google News → email
+  // Google News → email
   if (/google\s*news/i.test(text) && /email/i.test(text) && target){
     const m = text.match(/news\s+(on|about|for)\s+(.+?)(?:\s+to|\s+and|\s+at|$)/i);
     const query = (m?.[2] || text).replace(emails[0]||"", "").trim();
     return res.json({ flow: { steps: [ { action: "google_news_email", query, to: target } ] }, valid: true });
   }
-
-  // A10 Gmail forward last
-  if (/forward/i.test(text) && /gmail|email/i.test(text) && target){
+  // Gmail forward last (single)
+  if (/forward/i.test(text) && /gmail|email/i.test(text) && target && !/\b(\d+)\b/.test(text)){
     return res.json({ flow: { steps: [ { action: "gmail_forward_last", to: target } ] }, valid: true });
   }
+  // Gmail forward N (e.g., “last 3”, “first three”)
+  const nMatch = text.match(/\b(last|latest|first)\s+(\d+)\s+emails?\b/i);
+  if (nMatch && target){
+    const which = nMatch[1].toLowerCase(); // last|first
+    const n = Math.max(1, parseInt(nMatch[2],10));
+    return res.json({ flow: { steps: [ { action: "gmail_forward_n", to: target, n, order: which } ] }, valid: true });
+  }
 
-  // Scheduling intents (A3/A4/A5/A6)
+  // Scheduling intents
   if (/monitor|change\s*watch|track/i.test(text) && urlMatch && target){
     return res.json({ flow: { steps: [ { action: "monitor_add", url: urlMatch[0], to: target } ] }, valid: true });
   }
@@ -105,24 +110,21 @@ app.post("/api/plan", async (req,res)=>{
   if (/job/i.test(text) && /alert/i.test(text) && target){
     return res.json({ flow: { steps: [ { action: "jobalert_add", keywords: "ai", feeds: [], to: target } ] }, valid: true });
   }
-
-  // A7 Lead capture
+  // Lead capture
   if (/extract|csv/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "extract_to_csv", url: urlMatch[0], selector: "a", to: target } ] }, valid: true });
   }
-
-  // A8 SEO snapshot
+  // SEO snapshot
   if (/seo|serp|search\s+snapshot/i.test(text) && target){
     const kw = text.replace(/.*snapshot\s*(on|for)?/i, "").replace(/to\s+.+/i, "").trim() || text;
     return res.json({ flow: { steps: [ { action: "seo_snapshot", keyword: kw, to: target } ] }, valid: true });
   }
-
-  // A9 Uptime/content check
+  // Uptime
   if (/(uptime|status|check)/i.test(text) && urlMatch){
     return res.json({ flow: { steps: [ { action: "uptime_check", url: urlMatch[0], to: target } ] }, valid: true });
   }
 
-  // Fallback to LLM planner (generic browser plan)
+  // LLM planner (generic browser)
   const sys =
 `Output ONLY JSON: {start_url?: string, steps: Array<
  {action:'goto', url?:string} |
@@ -141,11 +143,12 @@ app.post("/api/plan", async (req,res)=>{
  {action:'seo_snapshot', keyword:string, to:string} |
  {action:'uptime_check', url:string, expect_selector?:string, expect_text?:string, to?:string} |
  {action:'google_news_email', query:string, to:string} |
- {action:'gmail_forward_last', to:string}
+ {action:'gmail_forward_last', to:string} |
+ {action:'gmail_forward_n', to:string, n:number, order:'last'|'first'}
 >}
 Rules:
 - Prefer no-browser actions when available.
-- If user says "screenshot ... email", ensure 'email_shots' is included after screenshots.
+- If user says "screenshot ... email", include 'email_shots' after screenshots.
 - JSON only.`;
 
   const r = await openai.chat.completions.create({
@@ -159,7 +162,7 @@ Rules:
   if (!Array.isArray(flow.steps) && flow.action) flow = { steps: [flow] };
   if (!Array.isArray(flow.steps)) flow = { steps: [] };
 
-  // 🚀 Auto-append email_shots when the prompt says "screenshot ... email"
+  // auto-append email_shots if user asked "screenshot ... email"
   if (/screenshot/i.test(text) && target && !flow.steps.some(s=>s.action==="email_shots")){
     flow.steps.push({ action: "email_shots", to: target });
   }
@@ -185,9 +188,9 @@ app.post("/api/run", async (req,res)=>{
     const log = (m)=>pushLog(r, m);
 
     try{
-      // ----- ONE-SHOT ACTIONS (no browser) -----
       const only = flow.steps.length === 1 ? flow.steps[0] : null;
 
+      // one-shot, no browser
       if (only?.action === "google_news_email"){
         log(`google_news_email "${only.query}" → ${only.to}`);
         const items = await fetchGoogleNews(only.query);
@@ -196,7 +199,6 @@ app.post("/api/run", async (req,res)=>{
         log(`email sent`);
         r.status = "done"; return;
       }
-
       if (only?.action === "screenshot_url"){
         log(`screenshot_url ${only.url}`);
         const file = await screenshotURL(only.url);
@@ -205,7 +207,6 @@ app.post("/api/run", async (req,res)=>{
         r.shots.push({ url: "/"+file.replace(/^[.]/,"") });
         r.status = "done"; return;
       }
-
       if (only?.action === "pdf_url"){
         log(`pdf_url ${only.url}`);
         const pdf = await pdfURL(only.url);
@@ -213,7 +214,6 @@ app.post("/api/run", async (req,res)=>{
         log(`done: ${pdf}`);
         r.status = "done"; return;
       }
-
       if (only?.action === "uptime_check"){
         log(`uptime_check ${only.url}`);
         const result = await uptimeCheck(only);
@@ -223,7 +223,6 @@ app.post("/api/run", async (req,res)=>{
         log(result.message);
         r.status = "done"; return;
       }
-
       if (only?.action === "seo_snapshot"){
         log(`seo_snapshot "${only.keyword}" → ${only.to}`);
         const body = await seoSnapshotEmailBody(only.keyword);
@@ -231,7 +230,6 @@ app.post("/api/run", async (req,res)=>{
         log("email sent");
         r.status = "done"; return;
       }
-
       if (only?.action === "extract_to_csv"){
         log(`extract_to_csv ${only.url} selector=${only.selector||"a"}`);
         const { csvPath, count } = await extractToCSV(only.url, only.selector||"a");
@@ -239,14 +237,18 @@ app.post("/api/run", async (req,res)=>{
         log(`csv rows=${count}`);
         r.status = "done"; return;
       }
-
       if (only?.action === "gmail_forward_last"){
         log(`gmail_forward_last → ${only.to}`);
         await forwardLastEmail(only.to, log);
         r.status = "done"; return;
       }
+      if (only?.action === "gmail_forward_n"){
+        log(`gmail_forward_n (${only.n}, ${only.order||"last"}) → ${only.to}`);
+        await forwardNEmails(only.to, Number(only.n)||1, (only.order||"last")==="first", log);
+        r.status = "done"; return;
+      }
 
-      // ----- BROWSER AUTOMATION -----
+      // browser automation
       const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
       const context = await browser.newContext({
         recordVideo: { dir: "runs" },
@@ -269,6 +271,7 @@ app.post("/api/run", async (req,res)=>{
         else if (s.action === "wait"){ await page.waitForLoadState(s.state || "load", { timeout: 60000 }); await screenshot("after-wait"); }
         else if (s.action === "screenshot"){ await screenshot("manual"); }
         else if (s.action === "gmail_forward_last"){ await forwardLastEmail(s.to, log); }
+        else if (s.action === "gmail_forward_n"){ await forwardNEmails(s.to, Number(s.n)||1, (s.order||"last")==="first", log); }
         else if (s.action === "email_shots"){
           const files = r.shots.map(o => o.url.replace(/^\//,""));
           await sendEmail({
@@ -300,7 +303,7 @@ app.get("/api/run/:id", (req,res)=>{
   res.json({ ...r, credits_after: u.credits });
 });
 
-// ---------- CRON RUNNERS ----------
+// ---------- cron-like endpoints ----------
 app.get("/api/monitors/run", async (_req,res)=>{
   const monitors = await loadJSON(files.monitors, []);
   let processed = 0, changed = 0;
@@ -486,14 +489,21 @@ async function fetchRSS(url, maxItems = 10){
   }
   return items;
 }
-async function gmailDigestText({ hours = 24 } = {}){
+
+// ---------- Gmail helpers ----------
+async function gmailConnect(){
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
-  const since = Date.now() - hours*3600_000;
   const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
   await imap.connect();
-  await imap.selectMailbox("INBOX");
+  await imap.mailboxOpen("INBOX"); // <- correct API
+  return imap;
+}
+
+async function gmailDigestText({ hours = 24 } = {}){
+  const imap = await gmailConnect();
+  const since = Date.now() - hours*3600_000;
   let lines = [];
   for await (const msg of imap.fetch({ seen:false }, { envelope:true, internalDate:true }, { uid:true })){
     if (new Date(msg.internalDate).getTime() >= since){
@@ -503,25 +513,43 @@ async function gmailDigestText({ hours = 24 } = {}){
   await imap.logout();
   return lines.length ? lines.join("\n") : "No new mail in the last 24h.";
 }
+
 async function forwardLastEmail(to, log=()=>{}) {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
-  const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
-  await imap.connect();
-  const box = await imap.selectMailbox("INBOX");
-  if (!box.exists) { await imap.logout(); throw new Error("No messages in INBOX"); }
-  const seq = box.exists;
-  const msg = await imap.fetchOne(seq, { envelope: true, source: true });
+  const imap = await gmailConnect();
+  const status = await imap.status("INBOX", { messages: true });
+  const seq = status.messages;
+  if (!seq) { await imap.logout(); throw new Error("No messages in INBOX"); }
+  const msg = await imap.fetchOne(seq, { envelope: true, bodyParts: ["text"] });
   const subject = (msg?.envelope?.subject) || "(no subject)";
-  const raw = msg?.source?.toString("utf8") || "";
+  const preview = (msg?.bodyParts?.get("text")?.toString("utf8") || "").slice(0, 2000);
   await imap.logout();
-  await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded message (raw below):\n\n${raw.slice(0, 100000)}` });
+  await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded preview:\n\n${preview}` });
+  log(`Forwarded latest email to ${to}`);
+}
+
+async function forwardNEmails(to, n=1, oldestFirst=false, log=()=>{}){
+  const imap = await gmailConnect();
+  const status = await imap.status("INBOX", { messages: true });
+  const total = status.messages || 0;
+  if (!total){ await imap.logout(); throw new Error("No messages in INBOX"); }
+  const count = Math.min(n, total);
+  const start = oldestFirst ? 1 : (total - count + 1);
+  const end   = oldestFirst ? count : total;
+
+  for (let seq = start; seq <= end; seq++){
+    const msg = await imap.fetchOne(seq, { envelope: true, bodyParts: ["text"] });
+    const subject = (msg?.envelope?.subject) || "(no subject)";
+    const preview = (msg?.bodyParts?.get("text")?.toString("utf8") || "").slice(0, 2000);
+    await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded preview:\n\n${preview}` });
+    log(`Forwarded seq ${seq} to ${to}`);
+  }
+  await imap.logout();
 }
 
 // ---------- boot ----------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
+
 
 
 
