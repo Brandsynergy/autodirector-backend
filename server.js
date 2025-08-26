@@ -11,19 +11,17 @@ import nodemailer from "nodemailer";
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json({ limit: "1mb" }));
+app.use("/runs", express.static("runs"));
+app.use("/", express.static("public"));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const FREE_CREDITS = Number(process.env.FREE_CREDITS_ON_SIGNUP || 100);
 
-// In-memory store (simple and fine for getting started)
+// simple in-memory store
 const users = new Map(); // id -> { credits }
 const runs = new Map();  // id -> { status, logs, shots, videoUrl }
-
-function ensureUser(id){
-  if(!users.has(id)) users.set(id, { credits: FREE_CREDITS });
-  return users.get(id);
-}
-function logPush(r, m){ r.logs.push(new Date().toISOString()+" "+m); }
+function ensureUser(id){ if(!users.has(id)) users.set(id, { credits: FREE_CREDITS }); return users.get(id); }
+function pushLog(r, m){ r.logs.push(new Date().toISOString()+" "+m); }
 
 app.get("/api/health", (_,res)=> res.json({ ok:true }));
 
@@ -36,18 +34,14 @@ app.get("/api/user", (req,res)=>{
 app.post("/api/plan", async (req,res)=>{
   const text = (req.body?.prompt || "").slice(0, 800);
 
-  // If user asks to forward Gmail, return special step (no browser)
-  const emailMatches = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
+  // Short-circuit for Gmail forwarding (no browser)
+  const matches = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
   const gmailUser = (process.env.GMAIL_USER || "").toLowerCase();
-  const destGuess = emailMatches.find(e => e.toLowerCase() !== gmailUser);
-  if (/gmail|email/i.test(text) && /forward/i.test(text) && destGuess) {
-    return res.json({
-      flow: { steps: [ { action: "gmail_forward_last", to: destGuess } ] },
-      valid: true
-    });
+  const dest = matches.find(e => e.toLowerCase() !== gmailUser);
+  if (/gmail|email/i.test(text) && /forward/i.test(text) && dest) {
+    return res.json({ flow: { steps: [ { action: "gmail_forward_last", to: dest } ] }, valid: true });
   }
 
-  // Otherwise use the planner (browser automation)
   const sys =
 `Output ONLY JSON: {start_url?: string, steps: Array<
  {action:'goto', url?:string} |
@@ -59,15 +53,13 @@ app.post("/api/plan", async (req,res)=>{
 >}
 Rules:
 - If task mentions Gmail forwarding, output only {"action":"gmail_forward_last","to":"..."}.
-- Otherwise use normal browser steps (goto/click/type/wait/screenshot).
-- Do not include any commentary. JSON only.`;
+- Otherwise use normal browser steps.
+- No commentary. JSON only.`;
+
   const r = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     temperature: 0.2,
-    messages: [
-      { role: "system", content: sys },
-      { role: "user", content: `Create a plan for: ${text}` }
-    ],
+    messages: [{ role: "system", content: sys }, { role: "user", content: `Create a plan for: ${text}` }],
     response_format: { type: "json_object" }
   });
   let flow = { steps: [] };
@@ -79,7 +71,6 @@ app.post("/api/run", async (req,res)=>{
   const userId = req.headers["x-anon-id"] || "public";
   const u = ensureUser(userId);
   const START_COST = 25;
-
   if (u.credits < START_COST) return res.status(402).json({ error: "Low credits" });
   u.credits -= START_COST;
 
@@ -88,13 +79,12 @@ app.post("/api/run", async (req,res)=>{
   runs.set(id, { status:"running", logs:[], shots:[], videoUrl:null });
   res.json({ id, status:"running" });
 
-  // Run asynchronously
   (async()=>{
     const r = runs.get(id);
-    const log = (m)=>logPush(r, m);
+    const log = (m)=>pushLog(r, m);
 
     try{
-      // Handle special Gmail forward step (no browser)
+      // Special Gmail action
       if (flow.steps?.length === 1 && flow.steps[0].action === "gmail_forward_last"){
         log(`gmail_forward_last → ${flow.steps[0].to}`);
         await forwardLastEmail(flow.steps[0].to, log);
@@ -102,7 +92,7 @@ app.post("/api/run", async (req,res)=>{
         return;
       }
 
-      // Browser path
+      // Browser automation path
       const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
       const context = await browser.newContext({
         recordVideo: { dir: "runs" },
@@ -110,7 +100,6 @@ app.post("/api/run", async (req,res)=>{
       });
       const page = await context.newPage();
 
-      // start_url if provided
       if (flow.start_url) {
         log("goto " + flow.start_url);
         await page.goto(flow.start_url, { waitUntil: "domcontentloaded" });
@@ -137,7 +126,6 @@ app.post("/api/run", async (req,res)=>{
           await page.screenshot({ path: p, fullPage: true });
           r.shots.push({ url: `/${p}` });
         } else if (s.action === "gmail_forward_last"){
-          // if the planner included it among other steps
           log(`[${i}] gmail_forward_last → ${s.to}`);
           await forwardLastEmail(s.to, log);
         }
@@ -145,8 +133,7 @@ app.post("/api/run", async (req,res)=>{
 
       await page.close();
       const v = await page.video()?.path().catch(()=>null);
-      await context.close();
-      await browser.close();
+      await context.close(); await browser.close();
 
       r.videoUrl = v ? `/${v}` : null;
       r.status = "done";
@@ -165,19 +152,15 @@ app.get("/api/run/:id", (req,res)=>{
   res.json({ ...r, credits_after: u.credits });
 });
 
-// Serve screenshots/videos
-app.use("/runs", express.static("runs"));
-
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, ()=> console.log("Automation backend on " + PORT));
+app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
 
-/* ---------- Helpers ---------- */
+/* ---------- Gmail helper ---------- */
 async function forwardLastEmail(to, log=()=>{}) {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
 
-  // 1) Fetch most recent email via IMAP
   const imap = new ImapFlow({
     host: "imap.gmail.com",
     port: 993,
@@ -187,29 +170,26 @@ async function forwardLastEmail(to, log=()=>{}) {
   await imap.connect();
   const box = await imap.selectMailbox("INBOX");
   if (!box.exists) { await imap.logout(); throw new Error("No messages in INBOX"); }
-  const seq = box.exists; // last message
+  const seq = box.exists;
   const msg = await imap.fetchOne(seq, { envelope: true, source: true });
-  const originalSubject = (msg?.envelope?.subject) || "(no subject)";
-  const originalSource = msg?.source?.toString("utf8") || "";
+  const subject = (msg?.envelope?.subject) || "(no subject)";
+  const raw = msg?.source?.toString("utf8") || "";
   await imap.logout();
 
-  // 2) Send forward via SMTP
   const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass }
+    host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass }
   });
 
   const info = await transporter.sendMail({
     from: user,
     to,
-    subject: `Fwd: ${originalSubject}`,
-    text: `Forwarded message (raw below):\n\n${originalSource.slice(0, 100000)}`
+    subject: `Fwd: ${subject}`,
+    text: `Forwarded message (raw below):\n\n${raw.slice(0, 100000)}`
   });
 
   log(`Forwarded with MessageID: ${info.messageId}`);
 }
+
 
 
 
