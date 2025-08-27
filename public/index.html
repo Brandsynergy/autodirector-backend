@@ -1,184 +1,160 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>AutoDirector</title>
+  <title>MediAd AutoDirector</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Professional fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     :root{
       --bg:#0b0c10;
-      --panel:#14151a;
-      --panel2:#181a20;
-      --border:#252731;
-      --text:#e6e7eb;
+      --surface:#14151a;
+      --surface-2:#181a20;
+      --border:#262933;
+      --text:#eef0f4;
       --muted:#a6a8ad;
-      --accent:#8b5cf6;
-      --accent-2:#7c3aed;
+      --accent:#b08a46; /* MediAd gold tone from your logo */
+      --accent-2:#94743b;
       --success:#22c55e;
-      --warn:#f59e0b;
       --danger:#ef4444;
     }
     *{ box-sizing:border-box }
     body{
-      margin:0; background:var(--bg); color:var(--text);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     }
-    a{ color:var(--accent); text-decoration:none }
-    a:hover{ text-decoration:underline }
-    .wrap{ max-width:1200px; margin:0 auto; padding:28px 20px 40px }
-    .row{ display:flex; align-items:center; justify-content:space-between; gap:16px }
-    .brand{ display:flex; align-items:center; gap:12px }
-    .logo{ width:40px; height:40px; border-radius:12px; background:var(--accent); display:grid; place-items:center; color:#fff; font-weight:800; letter-spacing:.5px }
-    .kicker{ color:var(--muted); font-size:12px }
-    .badge{
-      display:inline-flex; align-items:center; gap:8px;
-      background: rgba(139,92,246,.12); color:var(--accent);
-      border:1px solid #8b5cf633; padding:6px 10px; border-radius:999px; font-weight:700; font-size:12px; letter-spacing:.25px
+    .wrap{ max-width:1120px; margin:0 auto; padding:28px 18px 40px }
+    /* Header */
+    .header{
+      display:flex; align-items:center; gap:16px; margin-bottom:18px;
     }
-    .badge.success{ background: rgba(34,197,94,.15); color:var(--success); border-color:#22c55e33 }
-    .panel{
-      background:var(--panel); border:1px solid var(--border); border-radius:18px; padding:18px;
+    .logo{ width:40px; height:40px; display:block; }
+    .title{ font-weight:700; font-size:22px; letter-spacing:.2px }
+    .tag{ color:var(--muted); font-size:12px; margin-top:2px }
+    /* Card / Panels */
+    .card{
+      background:var(--surface);
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:16px;
     }
-    h3{ margin:0 0 10px 0; font-size:16px; letter-spacing:.2px }
-    .topbar{ margin-bottom:10px; display:flex; align-items:center; justify-content:space-between }
-    .btn{
-      cursor:pointer; border-radius:12px; padding:10px 14px; font-weight:700; font-size:14px;
-      border:1px solid transparent; transition:background .15s, transform .05s; display:inline-flex; align-items:center; gap:8px
-    }
-    .btn:active{ transform:scale(.99) }
-    .btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent) }
-    .btn.primary:hover{ background:var(--accent-2) }
-    .btn.subtle{ background:var(--panel2); color:var(--text); border:1px solid var(--border) }
-    .btn.ghost{ background:transparent; color:var(--text); border:1px solid var(--border) }
+    h3{ margin:0 0 10px 0; font-size:15px; letter-spacing:.2px }
+    /* Inputs & buttons */
     textarea{
-      width:100%; min-height:100px; resize:vertical; outline:none;
-      background:var(--panel); color:var(--text); border:1px solid var(--border);
-      border-radius:14px; padding:14px 16px; font-size:15px;
+      width:100%; min-height:90px; resize:vertical; outline:none;
+      background:var(--surface-2); color:var(--text); border:1px solid var(--border);
+      border-radius:12px; padding:12px 14px; font-size:15px;
     }
-    textarea:focus{ border-color:var(--accent); box-shadow:0 0 0 3px #8b5cf622 }
+    textarea:focus{ border-color:var(--accent); box-shadow:0 0 0 3px #b08a4626 }
+    .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap }
+    .btn{
+      cursor:pointer; padding:10px 14px; font-weight:600; font-size:14px; border-radius:10px;
+      border:1px solid transparent; background:var(--surface-2); color:var(--text);
+    }
+    .btn.primary{ background:var(--accent); border-color:var(--accent); color:#111 }
+    .btn.primary:hover{ background:var(--accent-2) }
+    .btn.ghost{ background:transparent; border:1px solid var(--border) }
+    /* Layout */
+    .grid{ display:grid; grid-template-columns:1fr; gap:16px; }
+    @media (min-width:1000px){ .grid{ grid-template-columns: 1fr 1fr; } }
     pre{
-      margin:0; white-space:pre-wrap; background:var(--panel); color:var(--text);
-      border:1px solid var(--border); border-radius:14px; padding:12px; min-height:120px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      margin:0; white-space:pre-wrap; min-height:120px;
+      background:var(--surface-2); color:var(--text); border:1px solid var(--border);
+      border-radius:12px; padding:12px;
+      font-family:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       font-size:13px;
     }
-    .grid{ display:grid; grid-template-columns:1fr; gap:18px }
-    @media (min-width:1100px){ .grid{ grid-template-columns:1fr 1fr } }
-    .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px }
-    .chip{
-      cursor:pointer; background:var(--panel2); color:var(--text);
-      border:1px solid var(--border); border-radius:999px; padding:8px 12px; font-size:12px;
-    }
-    .shots{ display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); gap:10px; margin-top:8px }
-    .thumb{ border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--panel2) }
+    .hint{ color:var(--muted); font-size:12px; margin-top:6px }
+    .shots{ display:grid; grid-template-columns:repeat(auto-fill, minmax(160px,1fr)); gap:8px; margin-top:10px }
+    .thumb{ border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#0f1115 }
     .thumb img{ display:block; width:100%; height:auto }
-    .muted{ color:var(--muted) }
-    .hint{ color:var(--muted); font-size:12px; margin-top:4px }
-    .flex{ display:flex; gap:12px; align-items:center; flex-wrap:wrap }
+    .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px }
+    .chip{ cursor:pointer; background:var(--surface-2); border:1px solid var(--border); color:var(--text); padding:8px 12px; border-radius:999px; font-size:12px }
+    .status{ color:var(--muted); font-size:12px }
+    .status strong{ color:var(--text) }
+    .spacer{ height:2px }
+    footer{ margin-top:18px; color:var(--muted); font-size:12px; text-align:center }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <!-- Header -->
-    <div class="row" style="padding-bottom:8px">
-      <div class="brand">
-        <div class="logo">AD</div>
-        <div>
-          <div style="font-size:24px; font-weight:800; letter-spacing:.2px">AutoDirector</div>
-          <div class="kicker">Natural-language → browser automation. GitHub → Render (no Lovable needed).</div>
-        </div>
-      </div>
-      <div class="flex">
-        <span id="creditsBadge" class="badge">Credits: …</span>
-        <span class="badge success">Backend: <span id="hostLabel"></span></span>
+    <!-- Header (logo + simple title only) -->
+    <div class="header">
+      <img src="/logo.png" alt="MediAd" class="logo" />
+      <div>
+        <div class="title">MediAd AutoDirector</div>
+        <div class="tag">Natural-language browser automation</div>
       </div>
     </div>
 
-    <!-- Main -->
+    <!-- Input / Actions -->
+    <div class="card">
+      <h3>Describe what to automate</h3>
+      <textarea id="prompt"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button id="planBtn" class="btn">Plan</button>
+        <button id="runBtn" class="btn primary">Run</button>
+        <div id="statusTxt" class="status">Status: <strong>Idle</strong></div>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="hint">Examples: “Screenshot https://www.cnn.com and email to support@mivado.co” · “Save https://example.com as PDF and email to …”</div>
+    </div>
+
+    <!-- Results -->
     <div class="grid">
-      <!-- Left column -->
-      <div class="grid" style="gap:18px">
-        <div class="panel">
-          <div class="topbar">
-            <h3>Describe what to automate</h3>
-            <span id="statusBadge" class="badge">Idle</span>
-          </div>
-          <textarea id="prompt"></textarea>
-          <div class="flex" style="margin-top:12px">
-            <button id="planBtn" class="btn primary">Plan Automation</button>
-            <button id="runBtn" class="btn subtle">Run</button>
-          </div>
-          <div class="chips" id="chips"></div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h3>Planned Flow</h3>
+          <button id="copyBtn" class="btn ghost">Copy JSON</button>
         </div>
-
-        <div class="panel">
-          <div class="topbar">
-            <h3>Planned Flow</h3>
-            <button id="copyBtn" class="btn ghost">Copy JSON</button>
-          </div>
-          <pre id="flowBox">Click “Plan Automation”.</pre>
-        </div>
+        <pre id="flowBox">Click “Plan” to see the JSON plan.</pre>
       </div>
 
-      <!-- Right column -->
-      <div class="grid" style="gap:18px">
-        <div class="panel">
-          <h3>Run Console</h3>
-          <pre id="consoleBox">—</pre>
-          <div id="shotsWrap" style="display:none">
-            <div class="hint" style="margin-top:10px; font-weight:700; letter-spacing:.3px">Screenshots</div>
-            <div id="shots" class="shots"></div>
-          </div>
-          <div id="videoWrap" style="display:none; margin-top:12px">
-            <a id="videoLink" target="_blank">Open recorded video</a>
-          </div>
+      <div class="card">
+        <h3>Run Console</h3>
+        <pre id="consoleBox">—</pre>
+        <div id="shotsWrap" style="display:none">
+          <div class="hint">Screenshots</div>
+          <div id="shots" class="shots"></div>
         </div>
-
-        <div class="panel">
-          <h3>Tips</h3>
-          <ul class="muted" style="margin:0; padding-left:18px">
-            <li>Say <strong>“screenshot … and email it to …”</strong> for one-step capture + email.</li>
-            <li>Use <strong>“Forward my last 3 emails to …”</strong> to forward previews from Gmail.</li>
-            <li>Try <strong>“Save https://… as PDF and email it to …”</strong> for quick PDF exports.</li>
-            <li>Use precise URLs (e.g., <em>https://www.cnn.com</em>) for best results.</li>
-          </ul>
+        <div id="videoWrap" style="display:none; margin-top:10px">
+          <a id="videoLink" target="_blank">Open recorded video</a>
         </div>
       </div>
     </div>
+
+    <footer>© MediAd</footer>
   </div>
 
 <script>
 (function(){
-  const API = ""; // same origin (served by Express). If hosting UI elsewhere, put full base URL here.
-  const $ = sel => document.querySelector(sel);
+  const API = ""; // same origin
+  const $ = s => document.querySelector(s);
 
-  // anon id
+  // anonymous id for rate/credits if your backend uses it
   let anonId = localStorage.getItem("autodirector_anon_id");
   if (!anonId){ anonId = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("autodirector_anon_id", anonId); }
 
-  // UI elements
-  const hostLabel = $("#hostLabel");
-  const creditsBadge = $("#creditsBadge");
-  const statusBadge = $("#statusBadge");
   const prompt = $("#prompt");
   const planBtn = $("#planBtn");
-  const runBtn = $("#runBtn");
-  const flowBox = $("#flowBox");
+  const runBtn  = $("#runBtn");
   const copyBtn = $("#copyBtn");
+  const flowBox = $("#flowBox");
   const consoleBox = $("#consoleBox");
+  const statusTxt = $("#statusTxt").querySelector("strong");
   const shotsWrap = $("#shotsWrap");
-  const shotsEl = $("#shots");
+  const shotsEl   = $("#shots");
   const videoWrap = $("#videoWrap");
   const videoLink = $("#videoLink");
-  const chips = $("#chips");
+  const chips     = $("#chips");
 
-  hostLabel.textContent = location.host;
-
-  // sample prompts
+  // minimal samples
   const samples = [
-    "Screenshot https://www.cnn.com and email it to support@mivado.co",
-    "Save https://example.com as PDF and email it to support@mivado.co",
-    "Email me top Google News on Formula 1 to support@mivado.co",
+    "Screenshot https://www.cnn.com and email to support@mivado.co",
+    "Save https://example.com as PDF and email to support@mivado.co",
     "Forward my last 3 emails to support@mivado.co"
   ];
   samples.forEach(t=>{
@@ -189,25 +165,18 @@
     chips.appendChild(b);
   });
 
-  // defaults
-  prompt.value = 'Open https://example.com and take a screenshot, then email it to support@mivado.co.';
+  prompt.value = "Screenshot https://www.cnn.com and email to support@mivado.co";
 
-  // state
   let flow = null;
   let runId = null;
   let poll = null;
 
-  function setStatus(txt, tone="neutral"){
-    statusBadge.textContent = txt;
-    statusBadge.className = "badge";
-    if (tone==="success") statusBadge.classList.add("success");
-    if (tone==="danger")  statusBadge.classList.add("danger");
+  function setStatus(s){
+    statusTxt.textContent = s;
   }
-
   function setConsole(lines){
     consoleBox.textContent = lines && lines.length ? lines.join("\\n") : "—";
   }
-
   function setShots(list){
     if (!list || !list.length){ shotsWrap.style.display = "none"; shotsEl.innerHTML=""; return; }
     shotsWrap.style.display = "";
@@ -216,85 +185,66 @@
       const a = document.createElement("a");
       a.href = s.url; a.target = "_blank"; a.className = "thumb";
       const img = document.createElement("img");
-      img.src = s.url;
+      img.src = s.url; img.alt = "screenshot";
       a.appendChild(img);
       shotsEl.appendChild(a);
     });
   }
-
   async function fetchJSON(url, opts={}){
-    const r = await fetch(url, { ...opts, headers: { ...(opts.headers||{}), "x-anon-id": anonId, "content-type": "application/json" } });
+    const r = await fetch(url, { ...opts, headers: { ...(opts.headers||{}), "x-anon-id": anonId, "content-type":"application/json" }});
     return await r.json();
   }
 
-  async function refreshUser(){
-    try{
-      const d = await fetchJSON(API + "/api/user");
-      creditsBadge.textContent = "Credits: " + (d.credits ?? "—");
-    }catch{}
-  }
-
   async function plan(){
-    setStatus("planning…");
-    flow = null; flowBox.textContent = "Planning…"; setConsole([]);
-    setShots(null); videoWrap.style.display = "none";
+    setStatus("Planning…");
+    flow = null; flowBox.textContent = "Planning…"; setConsole([]); setShots(null); videoWrap.style.display = "none";
     try{
       const d = await fetchJSON(API + "/api/plan", { method:"POST", body: JSON.stringify({ prompt: prompt.value }) });
       flow = d.flow || null;
-      flowBox.textContent = flow ? JSON.stringify(flow, null, 2) : "No plan. Try rephrasing your prompt.";
-      setStatus("planned");
-    }catch(e){
-      setStatus("plan error","danger");
-      flowBox.textContent = "Planning failed. Please try again.";
+      flowBox.textContent = flow ? JSON.stringify(flow, null, 2) : "No plan generated. Try rephrasing.";
+      setStatus("Planned");
+    }catch{
+      setStatus("Plan error");
+      flowBox.textContent = "Planning failed. Try again.";
     }
   }
 
   async function run(){
     if (!flow){ await plan(); if (!flow) return; }
-    setStatus("running");
-    consoleBox.textContent = "—"; setShots(null); videoWrap.style.display = "none";
+    setStatus("Running…");
+    setConsole([]); setShots(null); videoWrap.style.display = "none";
     try{
       const d = await fetchJSON(API + "/api/run", { method:"POST", body: JSON.stringify({ flow }) });
       runId = d.id;
-      if (!runId){ setStatus("run error", "danger"); return; }
-      // poll
+      if (!runId){ setStatus("Run error"); return; }
       poll && clearInterval(poll);
       poll = setInterval(async ()=>{
         try{
           const s = await fetchJSON(API + "/api/run/" + runId);
           setConsole(s.logs||[]);
-          setShots(s.shots || []);
+          setShots(s.shots||[]);
           if (s.videoUrl){
             videoWrap.style.display = "";
             videoLink.href = s.videoUrl;
             videoLink.textContent = "Open recorded video";
           }
-          if (s.status === "done"){
-            setStatus("done","success"); clearInterval(poll); refreshUser();
-          }
-          if (s.status === "error"){
-            setStatus("error","danger"); clearInterval(poll); refreshUser();
-          }
-        }catch(e){}
+          if (s.status === "done"){ setStatus("Done"); clearInterval(poll); }
+          if (s.status === "error"){ setStatus("Error"); clearInterval(poll); }
+        }catch{}
       }, 1200);
-    }catch(e){
-      setStatus("run error","danger");
+    }catch{
+      setStatus("Run error");
     }
   }
 
-  // events
   planBtn.onclick = plan;
   runBtn.onclick  = run;
-  copyBtn.onclick = ()=>{
-    if (!flow) return;
-    navigator.clipboard.writeText(JSON.stringify(flow, null, 2));
-    copyBtn.textContent = "Copied";
-    setTimeout(()=> copyBtn.textContent = "Copy JSON", 900);
-  };
-
-  // boot
-  refreshUser();
+  copyBtn.onclick = ()=>{ if (!flow) return; navigator.clipboard.writeText(JSON.stringify(flow,null,2)); copyBtn.textContent="Copied"; setTimeout(()=>copyBtn.textContent="Copy JSON",800); };
 })();
 </script>
 </body>
 </html>
+                                                            
+  
+  
+  
