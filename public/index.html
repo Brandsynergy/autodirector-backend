@@ -1,144 +1,300 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
   <title>AutoDirector</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0b0b0c; --card:#0f0f11; --border:#2b2b2e; --text:#e7e7ea; --muted:#b7b7b9; --brand:#9b5cff; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
-    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
-    .row { display:flex; gap:12px; align-items:center; }
-    .pill { padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:#151517; }
-    .card { border:1px solid var(--border); background:var(--card); border-radius:12px; padding:12px; }
-    textarea, input { width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); }
-    button { padding:10px 14px; border-radius:10px; cursor:pointer; }
-    .btn-primary { border:1px solid var(--brand); background:var(--brand); color:var(--bg); }
-    .btn { border:1px solid var(--border); background:#111114; color:var(--text); }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px; }
-    pre { white-space: pre-wrap; font-size:12px; background:var(--bg); padding:10px; border-radius:8px; max-height:260px; overflow:auto; }
-    .log { background:var(--bg); border:1px solid var(--border); padding:8px; border-radius:8px; font-size:12px; }
-    img, video { width:100%; border-radius:8px; border:1px solid var(--border); }
-    a { color:#7bb7ff; }
+    :root{
+      --bg:#0b0c10;
+      --panel:#14151a;
+      --panel2:#181a20;
+      --border:#252731;
+      --text:#e6e7eb;
+      --muted:#a6a8ad;
+      --accent:#8b5cf6;
+      --accent-2:#7c3aed;
+      --success:#22c55e;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    *{ box-sizing:border-box }
+    body{
+      margin:0; background:var(--bg); color:var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }
+    a{ color:var(--accent); text-decoration:none }
+    a:hover{ text-decoration:underline }
+    .wrap{ max-width:1200px; margin:0 auto; padding:28px 20px 40px }
+    .row{ display:flex; align-items:center; justify-content:space-between; gap:16px }
+    .brand{ display:flex; align-items:center; gap:12px }
+    .logo{ width:40px; height:40px; border-radius:12px; background:var(--accent); display:grid; place-items:center; color:#fff; font-weight:800; letter-spacing:.5px }
+    .kicker{ color:var(--muted); font-size:12px }
+    .badge{
+      display:inline-flex; align-items:center; gap:8px;
+      background: rgba(139,92,246,.12); color:var(--accent);
+      border:1px solid #8b5cf633; padding:6px 10px; border-radius:999px; font-weight:700; font-size:12px; letter-spacing:.25px
+    }
+    .badge.success{ background: rgba(34,197,94,.15); color:var(--success); border-color:#22c55e33 }
+    .panel{
+      background:var(--panel); border:1px solid var(--border); border-radius:18px; padding:18px;
+    }
+    h3{ margin:0 0 10px 0; font-size:16px; letter-spacing:.2px }
+    .topbar{ margin-bottom:10px; display:flex; align-items:center; justify-content:space-between }
+    .btn{
+      cursor:pointer; border-radius:12px; padding:10px 14px; font-weight:700; font-size:14px;
+      border:1px solid transparent; transition:background .15s, transform .05s; display:inline-flex; align-items:center; gap:8px
+    }
+    .btn:active{ transform:scale(.99) }
+    .btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent) }
+    .btn.primary:hover{ background:var(--accent-2) }
+    .btn.subtle{ background:var(--panel2); color:var(--text); border:1px solid var(--border) }
+    .btn.ghost{ background:transparent; color:var(--text); border:1px solid var(--border) }
+    textarea{
+      width:100%; min-height:100px; resize:vertical; outline:none;
+      background:var(--panel); color:var(--text); border:1px solid var(--border);
+      border-radius:14px; padding:14px 16px; font-size:15px;
+    }
+    textarea:focus{ border-color:var(--accent); box-shadow:0 0 0 3px #8b5cf622 }
+    pre{
+      margin:0; white-space:pre-wrap; background:var(--panel); color:var(--text);
+      border:1px solid var(--border); border-radius:14px; padding:12px; min-height:120px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size:13px;
+    }
+    .grid{ display:grid; grid-template-columns:1fr; gap:18px }
+    @media (min-width:1100px){ .grid{ grid-template-columns:1fr 1fr } }
+    .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px }
+    .chip{
+      cursor:pointer; background:var(--panel2); color:var(--text);
+      border:1px solid var(--border); border-radius:999px; padding:8px 12px; font-size:12px;
+    }
+    .shots{ display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); gap:10px; margin-top:8px }
+    .thumb{ border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--panel2) }
+    .thumb img{ display:block; width:100%; height:auto }
+    .muted{ color:var(--muted) }
+    .hint{ color:var(--muted); font-size:12px; margin-top:4px }
+    .flex{ display:flex; gap:12px; align-items:center; flex-wrap:wrap }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1 style="font-size:28px; font-weight:800; margin:0 0 6px; color:var(--brand)">AutoDirector</h1>
-    <div style="font-size:13px; color:var(--muted); margin-bottom:16px">Natural-language → browser automation. GitHub → Render (no Lovable needed).</div>
-
-    <div class="row" style="margin-bottom:16px">
-      <div class="pill">Credits: <b id="credits">—</b></div>
-      <div style="margin-left:auto; font-size:12px; color:#8a8a8f">User: <span id="user"></span></div>
-    </div>
-
-    <div class="card">
-      <div style="font-weight:700; margin-bottom:8px">Describe what to automate</div>
-      <textarea id="prompt" placeholder="e.g., Open https://example.com and take a screenshot.">Open https://example.com and take a screenshot.</textarea>
-      <div class="row" style="margin-top:10px">
-        <button class="btn-primary" id="planBtn">Plan Automation</button>
-        <button class="btn" id="runBtn" disabled>Run</button>
+    <!-- Header -->
+    <div class="row" style="padding-bottom:8px">
+      <div class="brand">
+        <div class="logo">AD</div>
+        <div>
+          <div style="font-size:24px; font-weight:800; letter-spacing:.2px">AutoDirector</div>
+          <div class="kicker">Natural-language → browser automation. GitHub → Render (no Lovable needed).</div>
+        </div>
+      </div>
+      <div class="flex">
+        <span id="creditsBadge" class="badge">Credits: …</span>
+        <span class="badge success">Backend: <span id="hostLabel"></span></span>
       </div>
     </div>
 
+    <!-- Main -->
     <div class="grid">
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px">Planned Flow</div>
-        <pre id="flow">Click “Plan Automation”</pre>
+      <!-- Left column -->
+      <div class="grid" style="gap:18px">
+        <div class="panel">
+          <div class="topbar">
+            <h3>Describe what to automate</h3>
+            <span id="statusBadge" class="badge">Idle</span>
+          </div>
+          <textarea id="prompt"></textarea>
+          <div class="flex" style="margin-top:12px">
+            <button id="planBtn" class="btn primary">Plan Automation</button>
+            <button id="runBtn" class="btn subtle">Run</button>
+          </div>
+          <div class="chips" id="chips"></div>
+        </div>
+
+        <div class="panel">
+          <div class="topbar">
+            <h3>Planned Flow</h3>
+            <button id="copyBtn" class="btn ghost">Copy JSON</button>
+          </div>
+          <pre id="flowBox">Click “Plan Automation”.</pre>
+        </div>
       </div>
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px">Run Console</div>
-        <div id="logs"></div>
-        <div id="shots" class="grid" style="grid-template-columns:1fr 1fr; margin-top:10px"></div>
-        <div id="videoWrap" style="margin-top:10px; display:none">
-          <video id="video" controls></video>
+
+      <!-- Right column -->
+      <div class="grid" style="gap:18px">
+        <div class="panel">
+          <h3>Run Console</h3>
+          <pre id="consoleBox">—</pre>
+          <div id="shotsWrap" style="display:none">
+            <div class="hint" style="margin-top:10px; font-weight:700; letter-spacing:.3px">Screenshots</div>
+            <div id="shots" class="shots"></div>
+          </div>
+          <div id="videoWrap" style="display:none; margin-top:12px">
+            <a id="videoLink" target="_blank">Open recorded video</a>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Tips</h3>
+          <ul class="muted" style="margin:0; padding-left:18px">
+            <li>Say <strong>“screenshot … and email it to …”</strong> for one-step capture + email.</li>
+            <li>Use <strong>“Forward my last 3 emails to …”</strong> to forward previews from Gmail.</li>
+            <li>Try <strong>“Save https://… as PDF and email it to …”</strong> for quick PDF exports.</li>
+            <li>Use precise URLs (e.g., <em>https://www.cnn.com</em>) for best results.</li>
+          </ul>
         </div>
       </div>
     </div>
   </div>
 
 <script>
-  const BACKEND = ""; // same origin
-  let userId = localStorage.getItem("autodirector_user");
-  if(!userId){ userId = crypto.randomUUID(); localStorage.setItem("autodirector_user", userId); }
-  document.getElementById("user").textContent = userId.slice(0,8) + "…";
+(function(){
+  const API = ""; // same origin (served by Express). If hosting UI elsewhere, put full base URL here.
+  const $ = sel => document.querySelector(sel);
 
-  async function getCredits(){
-    const r = await fetch(`/api/user`, { headers: { "x-anon-id": userId }});
-    const j = await r.json();
-    document.getElementById("credits").textContent = j.credits ?? "—";
+  // anon id
+  let anonId = localStorage.getItem("autodirector_anon_id");
+  if (!anonId){ anonId = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("autodirector_anon_id", anonId); }
+
+  // UI elements
+  const hostLabel = $("#hostLabel");
+  const creditsBadge = $("#creditsBadge");
+  const statusBadge = $("#statusBadge");
+  const prompt = $("#prompt");
+  const planBtn = $("#planBtn");
+  const runBtn = $("#runBtn");
+  const flowBox = $("#flowBox");
+  const copyBtn = $("#copyBtn");
+  const consoleBox = $("#consoleBox");
+  const shotsWrap = $("#shotsWrap");
+  const shotsEl = $("#shots");
+  const videoWrap = $("#videoWrap");
+  const videoLink = $("#videoLink");
+  const chips = $("#chips");
+
+  hostLabel.textContent = location.host;
+
+  // sample prompts
+  const samples = [
+    "Screenshot https://www.cnn.com and email it to support@mivado.co",
+    "Save https://example.com as PDF and email it to support@mivado.co",
+    "Email me top Google News on Formula 1 to support@mivado.co",
+    "Forward my last 3 emails to support@mivado.co"
+  ];
+  samples.forEach(t=>{
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.textContent = t;
+    b.onclick = ()=>{ prompt.value = t; };
+    chips.appendChild(b);
+  });
+
+  // defaults
+  prompt.value = 'Open https://example.com and take a screenshot, then email it to support@mivado.co.';
+
+  // state
+  let flow = null;
+  let runId = null;
+  let poll = null;
+
+  function setStatus(txt, tone="neutral"){
+    statusBadge.textContent = txt;
+    statusBadge.className = "badge";
+    if (tone==="success") statusBadge.classList.add("success");
+    if (tone==="danger")  statusBadge.classList.add("danger");
   }
-  getCredits();
 
-  let plannedFlow = null;
-  document.getElementById("planBtn").onclick = async ()=>{
-    const prompt = document.getElementById("prompt").value;
-    document.getElementById("flow").textContent = "Planning…";
-    const r = await fetch(`/api/plan`, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json", "x-anon-id": userId },
-      body: JSON.stringify({ prompt })
+  function setConsole(lines){
+    consoleBox.textContent = lines && lines.length ? lines.join("\\n") : "—";
+  }
+
+  function setShots(list){
+    if (!list || !list.length){ shotsWrap.style.display = "none"; shotsEl.innerHTML=""; return; }
+    shotsWrap.style.display = "";
+    shotsEl.innerHTML = "";
+    list.forEach(s=>{
+      const a = document.createElement("a");
+      a.href = s.url; a.target = "_blank"; a.className = "thumb";
+      const img = document.createElement("img");
+      img.src = s.url;
+      a.appendChild(img);
+      shotsEl.appendChild(a);
     });
-    const j = await r.json();
-    plannedFlow = j.flow;
-    document.getElementById("flow").textContent = JSON.stringify(j.flow, null, 2);
-    document.getElementById("runBtn").disabled = !j.valid;
+  }
+
+  async function fetchJSON(url, opts={}){
+    const r = await fetch(url, { ...opts, headers: { ...(opts.headers||{}), "x-anon-id": anonId, "content-type": "application/json" } });
+    return await r.json();
+  }
+
+  async function refreshUser(){
+    try{
+      const d = await fetchJSON(API + "/api/user");
+      creditsBadge.textContent = "Credits: " + (d.credits ?? "—");
+    }catch{}
+  }
+
+  async function plan(){
+    setStatus("planning…");
+    flow = null; flowBox.textContent = "Planning…"; setConsole([]);
+    setShots(null); videoWrap.style.display = "none";
+    try{
+      const d = await fetchJSON(API + "/api/plan", { method:"POST", body: JSON.stringify({ prompt: prompt.value }) });
+      flow = d.flow || null;
+      flowBox.textContent = flow ? JSON.stringify(flow, null, 2) : "No plan. Try rephrasing your prompt.";
+      setStatus("planned");
+    }catch(e){
+      setStatus("plan error","danger");
+      flowBox.textContent = "Planning failed. Please try again.";
+    }
+  }
+
+  async function run(){
+    if (!flow){ await plan(); if (!flow) return; }
+    setStatus("running");
+    consoleBox.textContent = "—"; setShots(null); videoWrap.style.display = "none";
+    try{
+      const d = await fetchJSON(API + "/api/run", { method:"POST", body: JSON.stringify({ flow }) });
+      runId = d.id;
+      if (!runId){ setStatus("run error", "danger"); return; }
+      // poll
+      poll && clearInterval(poll);
+      poll = setInterval(async ()=>{
+        try{
+          const s = await fetchJSON(API + "/api/run/" + runId);
+          setConsole(s.logs||[]);
+          setShots(s.shots || []);
+          if (s.videoUrl){
+            videoWrap.style.display = "";
+            videoLink.href = s.videoUrl;
+            videoLink.textContent = "Open recorded video";
+          }
+          if (s.status === "done"){
+            setStatus("done","success"); clearInterval(poll); refreshUser();
+          }
+          if (s.status === "error"){
+            setStatus("error","danger"); clearInterval(poll); refreshUser();
+          }
+        }catch(e){}
+      }, 1200);
+    }catch(e){
+      setStatus("run error","danger");
+    }
+  }
+
+  // events
+  planBtn.onclick = plan;
+  runBtn.onclick  = run;
+  copyBtn.onclick = ()=>{
+    if (!flow) return;
+    navigator.clipboard.writeText(JSON.stringify(flow, null, 2));
+    copyBtn.textContent = "Copied";
+    setTimeout(()=> copyBtn.textContent = "Copy JSON", 900);
   };
 
-  document.getElementById("runBtn").onclick = async ()=>{
-    if(!plannedFlow) return;
-    const logs = document.getElementById("logs");
-    const shots = document.getElementById("shots");
-    const videoWrap = document.getElementById("videoWrap");
-    const video = document.getElementById("video");
-    logs.innerHTML = ""; shots.innerHTML = ""; videoWrap.style.display = "none"; video.removeAttribute("src");
-
-    const r = await fetch(`/api/run`, {
-      method:"POST",
-      headers:{ "Content-Type":"application/json", "x-anon-id": userId },
-      body: JSON.stringify({ flow: plannedFlow })
-    });
-    if(!r.ok){ alert("Run error: " + await r.text()); return; }
-    const j = await r.json();
-    poll(j.id);
-  };
-
-  function addLog(s){
-    const div = document.createElement("div");
-    div.className = "log"; div.textContent = s;
-    document.getElementById("logs").appendChild(div);
-  }
-
-  function poll(id){
-    const timer = setInterval(async ()=>{
-      const r = await fetch(`/api/run/${id}`, { headers:{ "x-anon-id": userId }});
-      if(!r.ok){ clearInterval(timer); return; }
-      const j = await r.json();
-      document.getElementById("credits").textContent = j.credits_after ?? "—";
-
-      const logs = document.getElementById("logs");
-      logs.innerHTML = "";
-      (j.logs||[]).forEach(x => addLog(x));
-
-      const shots = document.getElementById("shots");
-      shots.innerHTML = "";
-      (j.screens || j.shots || []).forEach(s=>{
-        const a = document.createElement("a");
-        a.href = s.url; a.target = "_blank";
-        const img = document.createElement("img");
-        img.src = s.url; a.appendChild(img);
-        shots.appendChild(a);
-      });
-
-      if(j.video_url || j.videoUrl){
-        document.getElementById("videoWrap").style.display = "block";
-        const v = j.video_url || j.videoUrl;
-        document.getElementById("video").innerHTML = `<source src="${v}" type="video/webm">`;
-      }
-
-      if(j.status === "done" || j.status === "error"){ clearInterval(timer); }
-    }, 1200);
-  }
+  // boot
+  refreshUser();
+})();
 </script>
 </body>
 </html>
