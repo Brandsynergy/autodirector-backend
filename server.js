@@ -1,554 +1,240 @@
+// Mediad AutoDirector – backend
 import express from "express";
 import cors from "cors";
-import fs from "fs";
-import fsp from "fs/promises";
+import bodyParser from "body-parser";
 import path from "path";
-import crypto from "crypto";
-import { chromium } from "playwright";
+import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
-import OpenAI from "openai";
-import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
-import { load as cheerioLoad } from "cheerio";
-import { stringify as csvStringify } from "csv-stringify";
+import { chromium } from "playwright"; // provided by the Docker base image
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
-app.use(express.json({ limit: "2mb" }));
-app.use("/runs", express.static("runs"));
-app.use("/", express.static("public"));
+const PORT = process.env.PORT || 10000;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const FREE_CREDITS = Number(process.env.FREE_CREDITS_ON_SIGNUP || 300);
+// ---------- middleware ----------
+app.use(cors());
+app.use(bodyParser.json({ limit: "2mb" }));
 
-const users = new Map(); // id -> { credits }
-const runs  = new Map(); // id -> { status, logs, shots, videoUrl }
-const pushLog = (r, m) => r.logs.push(new Date().toISOString()+" "+m);
-const ensureUser = (id) => { if(!users.has(id)) users.set(id, { credits: FREE_CREDITS }); return users.get(id); };
+// serve static assets
+app.use(express.static(path.join(__dirname, "public")));       // /logo.png, /index.html
+app.use("/public", express.static(path.join(__dirname, "public")));
+app.use("/runs", express.static(path.join(__dirname, "runs"))); // screenshots & videos
 
-const storesDir = "runs";
-const files = {
-  monitors: path.join(storesDir, "monitors.json"),
-  briefings: path.join(storesDir, "briefings.json"),
-  compwatch: path.join(storesDir, "compwatch.json"),
-  jobalerts: path.join(storesDir, "jobalerts.json"),
-  inboxRules: path.join(storesDir, "inbox_rules.json")
-};
-await fsp.mkdir(storesDir, { recursive: true });
-async function loadJSON(p, d){ try { return JSON.parse(await fsp.readFile(p, "utf8")); } catch { return d; } }
-async function saveJSON(p, obj){ await fsp.writeFile(p, JSON.stringify(obj, null, 2)); }
+// ---------- tiny in-memory run store ----------
+const runs = new Map(); // id -> {status, logs[], shots[], videoUrl?}
 
-// ---------- email helper ----------
-async function sendEmail({ to, subject, text, html, attachments }){
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass }
-  });
-  await transporter.sendMail({ from: user, to, subject, text, html, attachments });
+// ---------- helper: simple planner from natural text ----------
+function planFromPrompt(prompt) {
+  const p = (prompt || "").trim();
+  const urlMatch = p.match(/https?:\/\/\S+/i);
+  const wantsPdf = /\bpdf\b/i.test(p);
+  const wantsShot = /\bscreenshot\b/i.test(p) || !wantsPdf;
+  const emailToMatch =
+    p.match(/\bemail\s+to\s+([^\s"“”']+)|\bto:\s*([^\s"“”']+)/i);
+  let to =
+    (emailToMatch && (emailToMatch[1] || emailToMatch[2])) || null;
+  if (to && (to.includes("…") || to.includes("..."))) to = null; // ignore ellipsis
+
+  const steps = [];
+  if (urlMatch) {
+    const url = urlMatch[0].replace(/[””'")]+$/, "");
+    if (wantsPdf) steps.push({ action: "pdf_url", url });
+    if (wantsShot) steps.push({ action: "screenshot_url", url });
+  }
+  if (to) steps.push({ action: "email_results", to });
+
+  return { steps };
 }
 
-// ---------- health & user ----------
-app.get("/api/health", (_,res)=> res.json({ ok:true }));
-app.get("/api/user", (req,res)=>{
-  const id = req.headers["x-anon-id"] || "public";
-  const u = ensureUser(id);
-  res.json({ id, credits: u.credits });
-});
+// ---------- email helper (optional) ----------
+async function sendEmail({ to, subject, text, attachments = [] }) {
+  const {
+    SMTP_HOST,
+    SMTP_PORT = "587",
+    SMTP_USER,
+    SMTP_PASS,
+    SMTP_SECURE = "false"
+  } = process.env;
 
-// ---------- planning ----------
-app.post("/api/plan", async (req,res)=>{
-  const text = (req.body?.prompt || "").slice(0, 1000);
-
-  // detect target email
-  const emails = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []);
-  const me = (process.env.GMAIL_USER || "").toLowerCase();
-  const target = emails.find(e => e.toLowerCase() !== me);
-
-  const urlMatch = text.match(/https?:\/\/\S+/i);
-
-  // Direct screenshot
-  if (/(screenshot|snapshot)/i.test(text) && urlMatch){
-    return res.json({ flow: { steps: [ { action: "screenshot_url", url: urlMatch[0], to: target } ] }, valid: true });
-  }
-  // Direct PDF
-  if (/\b(pdf|save as pdf)\b/i.test(text) && urlMatch){
-    return res.json({ flow: { steps: [ { action: "pdf_url", url: urlMatch[0], to: target } ] }, valid: true });
-  }
-  // Google News → email
-  if (/google\s*news/i.test(text) && /email/i.test(text) && target){
-    const m = text.match(/news\s+(on|about|for)\s+(.+?)(?:\s+to|\s+and|\s+at|$)/i);
-    const query = (m?.[2] || text).replace(emails[0]||"", "").trim();
-    return res.json({ flow: { steps: [ { action: "google_news_email", query, to: target } ] }, valid: true });
-  }
-  // Gmail forward last (single)
-  if (/forward/i.test(text) && /gmail|email/i.test(text) && target && !/\b(\d+)\b/.test(text)){
-    return res.json({ flow: { steps: [ { action: "gmail_forward_last", to: target } ] }, valid: true });
-  }
-  // Gmail forward N (e.g., “last 3”, “first three”)
-  const nMatch = text.match(/\b(last|latest|first)\s+(\d+)\s+emails?\b/i);
-  if (nMatch && target){
-    const which = nMatch[1].toLowerCase(); // last|first
-    const n = Math.max(1, parseInt(nMatch[2],10));
-    return res.json({ flow: { steps: [ { action: "gmail_forward_n", to: target, n, order: which } ] }, valid: true });
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    return { ok: false, message: "SMTP not configured; skipped email." };
   }
 
-  // Scheduling intents
-  if (/monitor|change\s*watch|track/i.test(text) && urlMatch && target){
-    return res.json({ flow: { steps: [ { action: "monitor_add", url: urlMatch[0], to: target } ] }, valid: true });
-  }
-  if (/daily|every\s+morning|weekly|every\s+week/i.test(text) && /google\s*news/i.test(text) && target){
-    const m = text.match(/news\s+(on|about|for)\s+(.+?)(?:\s+to|\s+and|\s+at|$)/i);
-    const query = (m?.[2] || "news").trim();
-    const freq = /weekly|every\s+week/i.test(text) ? "weekly" : "daily";
-    return res.json({ flow: { steps: [ { action: "briefing_add", topic: query, to: target, frequency: freq } ] }, valid: true });
-  }
-  if (/competitor/i.test(text) && /rss|feed|url/i.test(text) && target){
-    return res.json({ flow: { steps: [ { action: "compwatch_add", feeds: [], to: target } ] }, valid: true });
-  }
-  if (/job/i.test(text) && /alert/i.test(text) && target){
-    return res.json({ flow: { steps: [ { action: "jobalert_add", keywords: "ai", feeds: [], to: target } ] }, valid: true });
-  }
-  // Lead capture
-  if (/extract|csv/i.test(text) && urlMatch){
-    return res.json({ flow: { steps: [ { action: "extract_to_csv", url: urlMatch[0], selector: "a", to: target } ] }, valid: true });
-  }
-  // SEO snapshot
-  if (/seo|serp|search\s+snapshot/i.test(text) && target){
-    const kw = text.replace(/.*snapshot\s*(on|for)?/i, "").replace(/to\s+.+/i, "").trim() || text;
-    return res.json({ flow: { steps: [ { action: "seo_snapshot", keyword: kw, to: target } ] }, valid: true });
-  }
-  // Uptime
-  if (/(uptime|status|check)/i.test(text) && urlMatch){
-    return res.json({ flow: { steps: [ { action: "uptime_check", url: urlMatch[0], to: target } ] }, valid: true });
-  }
-
-  // LLM planner (generic browser)
-  const sys =
-`Output ONLY JSON: {start_url?: string, steps: Array<
- {action:'goto', url?:string} |
- {action:'click', selector:string} |
- {action:'type', selector:string, text:string, enter?:boolean} |
- {action:'wait', state:'load'|'domcontentloaded'|'networkidle'} |
- {action:'screenshot'} |
- {action:'email_shots', to:string} |
- {action:'screenshot_url', url:string, to?:string} |
- {action:'pdf_url', url:string, to?:string} |
- {action:'monitor_add', url:string, to:string} |
- {action:'briefing_add', topic:string, to:string, frequency:'daily'|'weekly'} |
- {action:'compwatch_add', feeds?:string[], to:string} |
- {action:'jobalert_add', keywords:string|string[], feeds?:string[], to:string} |
- {action:'extract_to_csv', url:string, selector?:string, to:string} |
- {action:'seo_snapshot', keyword:string, to:string} |
- {action:'uptime_check', url:string, expect_selector?:string, expect_text?:string, to?:string} |
- {action:'google_news_email', query:string, to:string} |
- {action:'gmail_forward_last', to:string} |
- {action:'gmail_forward_n', to:string, n:number, order:'last'|'first'}
->}
-Rules:
-- Prefer no-browser actions when available.
-- If user says "screenshot ... email", include 'email_shots' after screenshots.
-- JSON only.`;
-
-  const r = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.2,
-    response_format: { type: "json_object" },
-    messages: [{ role: "system", content: sys }, { role: "user", content: `Create a plan for: ${text}` }]
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: SMTP_SECURE === "true",
+    auth: { user: SMTP_USER, pass: SMTP_PASS }
   });
 
-  let flow; try { flow = JSON.parse(r.choices?.[0]?.message?.content || "{}"); } catch { flow = {}; }
-  if (!Array.isArray(flow.steps) && flow.action) flow = { steps: [flow] };
-  if (!Array.isArray(flow.steps)) flow = { steps: [] };
+  await transporter.sendMail({
+    from: `"Mediad AutoDirector" <${SMTP_USER}>`,
+    to,
+    subject,
+    text,
+    attachments
+  });
 
-  // auto-append email_shots if user asked "screenshot ... email"
-  if (/screenshot/i.test(text) && target && !flow.steps.some(s=>s.action==="email_shots")){
-    flow.steps.push({ action: "email_shots", to: target });
+  return { ok: true };
+}
+
+// ---------- API: plan ----------
+app.post("/api/plan", (req, res) => {
+  try {
+    const { prompt } = req.body || {};
+    const flow = planFromPrompt(prompt);
+    return res.json({ flow });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
   }
-
-  res.json({ flow, valid: flow.steps.length > 0 });
 });
 
-// ---------- run ----------
-app.post("/api/run", async (req,res)=>{
-  const userId = req.headers["x-anon-id"] || "public";
-  const u = ensureUser(userId);
-  const START_COST = 25;
-  if (u.credits < START_COST) return res.status(402).json({ error: "Low credits" });
-  u.credits -= START_COST;
+// ---------- API: run ----------
+app.post("/api/run", async (req, res) => {
+  const { flow } = req.body || {};
+  if (!flow || !Array.isArray(flow.steps)) {
+    return res.status(400).json({ error: "Invalid flow" });
+  }
 
   const id = uuidv4();
-  const flow = Array.isArray(req.body?.flow?.steps) ? req.body.flow : { steps: [req.body?.flow].filter(Boolean) };
-  runs.set(id, { status:"running", logs:[], shots:[], videoUrl:null });
-  res.json({ id, status:"running" });
+  runs.set(id, { status: "running", logs: [], shots: [] });
+  res.json({ id });
 
-  (async()=>{
-    const r = runs.get(id);
-    const log = (m)=>pushLog(r, m);
+  (async () => {
+    const log = (msg) => {
+      const r = runs.get(id);
+      if (!r) return;
+      r.logs.push(new Date().toISOString() + " " + msg);
+    };
 
-    try{
-      const only = flow.steps.length === 1 ? flow.steps[0] : null;
-
-      // one-shot, no browser
-      if (only?.action === "google_news_email"){
-        log(`google_news_email "${only.query}" → ${only.to}`);
-        const items = await fetchGoogleNews(only.query);
-        const body = formatNewsEmail(items, only.query);
-        await sendEmail({ to: only.to, subject: `Top Google News on ${only.query}`, text: body });
-        log(`email sent`);
-        r.status = "done"; return;
-      }
-      if (only?.action === "screenshot_url"){
-        log(`screenshot_url ${only.url}`);
-        const file = await screenshotURL(only.url);
-        if (only.to) await sendEmail({ to: only.to, subject: `Screenshot: ${only.url}`, text: `Attached screenshot for ${only.url}`, attachments:[{ path: file, filename: path.basename(file) }] });
-        log(`done: ${file}`);
-        r.shots.push({ url: "/"+file.replace(/^[.]/,"") });
-        r.status = "done"; return;
-      }
-      if (only?.action === "pdf_url"){
-        log(`pdf_url ${only.url}`);
-        const pdf = await pdfURL(only.url);
-        if (only.to) await sendEmail({ to: only.to, subject: `PDF: ${only.url}`, text: `Attached PDF for ${only.url}`, attachments:[{ path: pdf, filename: path.basename(pdf) }] });
-        log(`done: ${pdf}`);
-        r.status = "done"; return;
-      }
-      if (only?.action === "uptime_check"){
-        log(`uptime_check ${only.url}`);
-        const result = await uptimeCheck(only);
-        if (!result.ok && only.to){
-          await sendEmail({ to: only.to, subject:`Uptime FAIL: ${only.url}`, text: result.message });
-        }
-        log(result.message);
-        r.status = "done"; return;
-      }
-      if (only?.action === "seo_snapshot"){
-        log(`seo_snapshot "${only.keyword}" → ${only.to}`);
-        const body = await seoSnapshotEmailBody(only.keyword);
-        await sendEmail({ to: only.to, subject:`SEO snapshot: ${only.keyword}`, text: body });
-        log("email sent");
-        r.status = "done"; return;
-      }
-      if (only?.action === "extract_to_csv"){
-        log(`extract_to_csv ${only.url} selector=${only.selector||"a"}`);
-        const { csvPath, count } = await extractToCSV(only.url, only.selector||"a");
-        await sendEmail({ to: only.to, subject:`CSV extracted from ${only.url}`, text:`Rows: ${count}`, attachments:[{ path: csvPath, filename: path.basename(csvPath) }] });
-        log(`csv rows=${count}`);
-        r.status = "done"; return;
-      }
-      if (only?.action === "gmail_forward_last"){
-        log(`gmail_forward_last → ${only.to}`);
-        await forwardLastEmail(only.to, log);
-        r.status = "done"; return;
-      }
-      if (only?.action === "gmail_forward_n"){
-        log(`gmail_forward_n (${only.n}, ${only.order||"last"}) → ${only.to}`);
-        await forwardNEmails(only.to, Number(only.n)||1, (only.order||"last")==="first", log);
-        r.status = "done"; return;
-      }
-
-      // browser automation
-      const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-      const context = await browser.newContext({
-        recordVideo: { dir: "runs" },
-        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    let browser, context, page;
+    try {
+      // Prepare Playwright with video recording
+      browser = await chromium.launch({ headless: true });
+      context = await browser.newContext({
+        recordVideo: { dir: path.join(__dirname, "runs", id + "_video") }
       });
-      const page = await context.newPage();
+      page = await context.newPage();
 
-      const screenshot = async (label)=>{
-        const p = path.join("runs", `${id}-${Date.now()}.png`);
-        await page.screenshot({ path: p, fullPage: true });
-        r.shots.push({ url: `/${p}`, label });
-      };
+      for (const step of flow.steps) {
+        if (step.action === "screenshot_url") {
+          log(`screenshot_url ${step.url}`);
+          await page.goto(step.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+          await page.waitForTimeout(1500);
+          const shotPath = path.join("runs", `${id}-shot.png`);
+          await page.screenshot({ path: path.join(__dirname, shotPath), fullPage: true });
+          const r = runs.get(id);
+          r.shots.push({ url: `/${shotPath}` });
+        }
 
-      if (flow.start_url) { await page.goto(flow.start_url, { waitUntil: "domcontentloaded", timeout: 60000 }); await screenshot("after-start"); }
+        if (step.action === "pdf_url") {
+          log(`pdf_url ${step.url}`);
+          await page.goto(step.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+          await page.waitForTimeout(1500);
+          const pdfPath = path.join("runs", `${id}.pdf`);
+          try {
+            await page.pdf({ path: path.join(__dirname, pdfPath), format: "A4", printBackground: true });
+            const r = runs.get(id);
+            r.pdfUrl = `/${pdfPath}`;
+          } catch (e) {
+            log("page.pdf not supported on this build; skipped.");
+          }
+        }
 
-      for (const s of flow.steps){
-        if (s.action === "goto"){ await page.goto(s.url || s.text || "", { waitUntil: "domcontentloaded", timeout: 60000 }); await screenshot("after-goto"); }
-        else if (s.action === "click"){ await page.click(s.selector, { timeout: 20000 }); await screenshot("after-click"); }
-        else if (s.action === "type"){ await page.locator(s.selector).first().waitFor({ state: "visible", timeout: 10000 }); await page.fill(s.selector, s.text||"", { timeout: 20000 }); if (s.enter) await page.keyboard.press("Enter"); await screenshot("after-type"); }
-        else if (s.action === "wait"){ await page.waitForLoadState(s.state || "load", { timeout: 60000 }); await screenshot("after-wait"); }
-        else if (s.action === "screenshot"){ await screenshot("manual"); }
-        else if (s.action === "gmail_forward_last"){ await forwardLastEmail(s.to, log); }
-        else if (s.action === "gmail_forward_n"){ await forwardNEmails(s.to, Number(s.n)||1, (s.order||"last")==="first", log); }
-        else if (s.action === "email_shots"){
-          const files = r.shots.map(o => o.url.replace(/^\//,""));
-          await sendEmail({
-            to: s.to,
-            subject: s.subject || "Screenshots from AutoDirector",
-            text: files.length ? "See attached screenshots." : "No screenshots were captured.",
-            attachments: files.map(p => ({ path: p, filename: path.basename(p) }))
+        if (step.action === "email_results") {
+          const r = runs.get(id);
+          const attachments = [];
+
+          if (r?.shots?.length) {
+            const p = r.shots[0].url.replace(/^\//, "");
+            attachments.push({ filename: "screenshot.png", path: path.join(__dirname, p) });
+          }
+          if (r?.pdfUrl) {
+            const p = r.pdfUrl.replace(/^\//, "");
+            attachments.push({ filename: "page.pdf", path: path.join(__dirname, p) });
+          }
+
+          log(`email_results → ${step.to}`);
+          const resp = await sendEmail({
+            to: step.to,
+            subject: "Mediad AutoDirector results",
+            text: "See attached file(s) produced by your automation.",
+            attachments
           });
-          log(`email_shots sent to ${s.to} (${files.length} attachments)`);
+          log(resp.ok ? "email sent" : resp.message);
         }
       }
 
-      const v = await page.video()?.path().catch(()=>null);
-      await page.close(); await context.close(); await browser.close();
-      if (v) runs.get(id).videoUrl = `/${v}`;
-      r.status = "done";
-    }catch(e){
-      pushLog(r, `ERROR: ${e.message}`);
-      r.status = "error";
+      // Capture video link if exists
+      try {
+        const v = await page.video();
+        if (v) {
+          const p = await v.path();
+          // Playwright writes as .webm in the recordVideo dir
+          const rel = path.relative(__dirname, p);
+          const r = runs.get(id);
+          if (r) r.videoUrl = "/" + rel.replace(/\\/g, "/");
+        }
+      } catch (_) {}
+
+      await context.close();
+      await browser.close();
+
+      const r = runs.get(id);
+      if (r) r.status = "done";
+    } catch (e) {
+      const r = runs.get(id);
+      if (r) {
+        r.status = "error";
+        r.logs.push("ERROR: " + String(e));
+      }
+      try { await context?.close(); await browser?.close(); } catch {}
     }
   })();
 });
 
-app.get("/api/run/:id", (req,res)=>{
-  const userId = req.headers["x-anon-id"] || "public";
-  const u = ensureUser(userId);
+// ---------- API: poll run ----------
+app.get("/api/run/:id", (req, res) => {
   const r = runs.get(req.params.id);
-  if(!r) return res.status(404).json({ error:"Not found" });
-  res.json({ ...r, credits_after: u.credits });
+  if (!r) return res.status(404).json({ error: "Not found" });
+  res.json(r);
 });
 
-// ---------- cron-like endpoints ----------
-app.get("/api/monitors/run", async (_req,res)=>{
-  const monitors = await loadJSON(files.monitors, []);
-  let processed = 0, changed = 0;
-  for (const m of monitors){
-    processed++;
-    const html = await (await fetch(m.url)).text();
-    const hash = crypto.createHash("sha256").update(html).digest("hex");
-    if (m.last_hash && m.last_hash !== hash){
-      const file = await screenshotURL(m.url);
-      await sendEmail({ to: m.to, subject:`Change detected: ${m.url}`, text:`The page content changed.\nURL: ${m.url}`, attachments:[{ path: file, filename: path.basename(file) }] });
-      changed++;
-    }
-    m.last_hash = hash;
-  }
-  await saveJSON(files.monitors, monitors);
-  res.json({ ok:true, processed, changed });
+// health + SPA fallback
+app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+
+app.listen(PORT, () => {
+  console.log(`AutoDirector service listening on ${PORT}`);
 });
-
-app.get("/api/briefings/run", async (_req,res)=>{
-  const briefings = await loadJSON(files.briefings, []);
-  let sent = 0;
-  for (const b of briefings){
-    const items = await fetchGoogleNews(b.topic);
-    const body = formatNewsEmail(items, b.topic);
-    await sendEmail({ to: b.to, subject:`${b.frequency==="weekly"?"Weekly": "Daily"} News on ${b.topic}`, text: body });
-    sent++;
-  }
-  res.json({ ok:true, sent });
-});
-
-app.get("/api/compwatch/run", async (_req,res)=>{
-  const cw = await loadJSON(files.compwatch, []);
-  let sent = 0;
-  for (const c of cw){
-    let lines = [];
-    for (const feed of c.feeds){
-      const items = await fetchRSS(feed, 5);
-      lines.push(`Feed: ${feed}`);
-      items.forEach(i => lines.push(`- ${i.title}\n  ${i.link}`));
-      lines.push("");
-    }
-    await sendEmail({ to: c.to, subject: "Competitor watch update", text: lines.join("\n") || "No updates." });
-    sent++;
-  }
-  res.json({ ok:true, sent });
-});
-
-app.get("/api/jobalerts/run", async (_req,res)=>{
-  const js = await loadJSON(files.jobalerts, []);
-  let sent = 0;
-  for (const j of js){
-    const kws = (j.keywords||[]).map(k=>k.toLowerCase());
-    let lines = [];
-    for (const feed of j.feeds){
-      const items = await fetchRSS(feed, 20);
-      const hits = items.filter(i => kws.some(k => (i.title||"").toLowerCase().includes(k)));
-      if (hits.length){ lines.push(`Feed: ${feed}`); hits.forEach(i=>lines.push(`- ${i.title}\n  ${i.link}`)); lines.push(""); }
-    }
-    if (lines.length){
-      await sendEmail({ to: j.to, subject:`Job alerts: ${kws.join(", ")}`, text: lines.join("\n") });
-      sent++;
-    }
-  }
-  res.json({ ok:true, sent });
-});
-
-// ---------- helpers ----------
-async function screenshotURL(url){
-  const id = uuidv4();
-  const out = path.join("runs", `${id}-shot.png`);
-  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-  const context = await browser.newContext({ deviceScaleFactor: 1.0 });
-  const page = await context.newPage();
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.screenshot({ path: out, fullPage: true });
-  await browser.close();
-  return out;
-}
-async function pdfURL(url){
-  const id = uuidv4();
-  const out = path.join("runs", `${id}.pdf`);
-  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.pdf({ path: out, printBackground: true, format: "A4" });
-  await browser.close();
-  return out;
-}
-async function seoSnapshotEmailBody(keyword){
-  const key = process.env.SERPAPI_KEY; // optional
-  let lines = [`Keyword: ${keyword}`, ""];
-  if (key){
-    const u = new URL("https://serpapi.com/search.json");
-    u.searchParams.set("q", keyword);
-    u.searchParams.set("engine", "google");
-    u.searchParams.set("num", "10");
-    u.searchParams.set("api_key", key);
-    const data = await (await fetch(u)).json();
-    const results = (data.organic_results || []).slice(0,10);
-    results.forEach((r,i)=>lines.push(`${i+1}. ${r.title}\n   ${r.link}`));
-    return lines.join("\n") || "No results.";
-  } else {
-    const items = await fetchGoogleNews(keyword, 10);
-    items.forEach((i,idx)=>lines.push(`${idx+1}. ${i.title}${i.source ? " — "+i.source:""}\n   ${i.link}`));
-    lines.push("\n(Set SERPAPI_KEY to get standard Google results.)");
-    return lines.join("\n");
-  }
-}
-async function extractToCSV(url, selector){
-  const html = await (await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }})).text();
-  const $ = cheerioLoad(html);
-  const rows = [];
-  const emails = new Set();
-  $(selector).each((_,el)=>{
-    const text = $(el).text().trim();
-    const href = $(el).attr("href") || "";
-    rows.push({ text, href });
-  });
-  (html.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).forEach(e => emails.add(e));
-  const id = uuidv4();
-  const csvPath = path.join("runs", `${id}.csv`);
-  await new Promise((resolve,reject)=>{
-    const s = csvStringify(rows, { header:true });
-    const w = fs.createWriteStream(csvPath);
-    s.on("error", reject); w.on("error", reject); w.on("finish", resolve);
-    s.pipe(w);
-  });
-  if (emails.size){ await fsp.appendFile(csvPath, `\n\nemails\n${[...emails].join("\n")}\n`); }
-  return { csvPath, count: rows.length, emails: emails.size };
-}
-async function uptimeCheck({ url, expect_selector, expect_text }){
-  try{
-    const r = await fetch(url, { redirect: "follow" });
-    const statusOk = r.status >= 200 && r.status < 400;
-    const body = await r.text();
-    if (!statusOk) return { ok:false, message:`Status ${r.status} for ${url}` };
-    if (expect_text && !body.toLowerCase().includes(String(expect_text).toLowerCase()))
-      return { ok:false, message:`Text not found: "${expect_text}"` };
-    if (expect_selector){
-      const $ = cheerioLoad(body);
-      if (!$(expect_selector).length) return { ok:false, message:`Selector not found: ${expect_selector}` };
-    }
-    return { ok:true, message:`OK ${url}` };
-  }catch(e){ return { ok:false, message:`Error ${e.message}` }; }
-}
-async function fetchGoogleNews(query, maxItems = 8){
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-GB&gl=GB&ceid=GB:en`;
-  const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  const xml = await resp.text();
-  const items = [];
-  const parts = xml.split("<item>").slice(1);
-  for (const part of parts){
-    const end = part.indexOf("</item>");
-    const itemXml = end >= 0 ? part.slice(0, end) : part;
-    const title = (itemXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/s)?.[1] ||
-                   itemXml.match(/<title>(.*?)<\/title>/s)?.[1] || "").trim();
-    const link = (itemXml.match(/<link>(.*?)<\/link>/s)?.[1] || "").trim();
-    const source = (itemXml.match(/<source[^>]*>(.*?)<\/source>/s)?.[1] || "").trim();
-    if (title && link) items.push({ title, link, source });
-    if (items.length >= maxItems) break;
-  }
-  return items;
-}
-function formatNewsEmail(items, query){
-  if (!items.length) return `No recent results for "${query}".`;
-  const lines = items.map(i => `- ${i.title}${i.source ? " — " + i.source : ""}\n  ${i.link}`);
-  return `Top Google News for "${query}":\n\n` + lines.join("\n") + "\n";
-}
-async function fetchRSS(url, maxItems = 10){
-  const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  const xml = await resp.text();
-  const items = [];
-  const parts = xml.split("<item>").slice(1);
-  for (const part of parts){
-    const end = part.indexOf("</item>");
-    const itemXml = end >= 0 ? part.slice(0, end) : part;
-    const title = (itemXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/s)?.[1] ||
-                   itemXml.match(/<title>(.*?)<\/title>/s)?.[1] || "").trim();
-    const link = (itemXml.match(/<link>(.*?)<\/link>/s)?.[1] || "").trim();
-    if (title && link) items.push({ title, link });
-    if (items.length >= maxItems) break;
-  }
-  return items;
-}
-
-// ---------- Gmail helpers ----------
-async function gmailConnect(){
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
-  const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
-  await imap.connect();
-  await imap.mailboxOpen("INBOX"); // correct API
-  return imap;
-}
-
-async function gmailDigestText({ hours = 24 } = {}){
-  const imap = await gmailConnect();
-  const since = Date.now() - hours*3600_000;
-  let lines = [];
-  for await (const msg of imap.fetch({ seen:false }, { envelope:true, internalDate:true }, { uid:true })){
-    if (new Date(msg.internalDate).getTime() >= since){
-      lines.push(`- ${msg.envelope.from?.[0]?.name || msg.envelope.from?.[0]?.address || "?"} — ${msg.envelope.subject || "(no subject)"}`);
-    }
-  }
-  await imap.logout();
-  return lines.length ? lines.join("\n") : "No new mail in the last 24h.";
-}
-
-async function forwardLastEmail(to, log=()=>{}) {
-  const imap = await gmailConnect();
-  const status = await imap.status("INBOX", { messages: true });
-  const seq = status.messages;
-  if (!seq) { await imap.logout(); throw new Error("No messages in INBOX"); }
-  const msg = await imap.fetchOne(seq, { envelope: true, bodyParts: ["text"] });
-  const subject = (msg?.envelope?.subject) || "(no subject)";
-  const preview = (msg?.bodyParts?.get("text")?.toString("utf8") || "").slice(0, 2000);
-  await imap.logout();
-  await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded preview:\n\n${preview}` });
-  log(`Forwarded latest email to ${to}`);
-}
-
-async function forwardNEmails(to, n=1, oldestFirst=false, log=()=>{}){
-  const imap = await gmailConnect();
-  const status = await imap.status("INBOX", { messages: true });
-  const total = status.messages || 0;
-  if (!total){ await imap.logout(); throw new Error("No messages in INBOX"); }
-  const count = Math.min(n, total);
-  const start = oldestFirst ? 1 : (total - count + 1);
-  const end   = oldestFirst ? count : total;
-
-  for (let seq = start; seq <= end; seq++){
-    const msg = await imap.fetchOne(seq, { envelope: true, bodyParts: ["text"] });
-    const subject = (msg?.envelope?.subject) || "(no subject)";
-    const preview = (msg?.bodyParts?.get("text")?.toString("utf8") || "").slice(0, 2000);
-    await sendEmail({ to, subject:`Fwd: ${subject}`, text:`Forwarded preview:\n\n${preview}` });
-    log(`Forwarded seq ${seq} to ${to}`);
-  }
-  await imap.logout();
-}
-
-// ---------- boot ----------
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
 
 
 
