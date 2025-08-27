@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>MediAd AutoDirector</title>
+  <title>Mediad AutoDirector</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/logo.png" />
   <!-- Professional fonts -->
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
@@ -14,24 +15,18 @@
       --border:#262933;
       --text:#eef0f4;
       --muted:#a6a8ad;
-      --accent:#b08a46; /* MediAd gold tone from your logo */
+      --accent:#b08a46; /* MediAd/Mediad gold tone */
       --accent-2:#94743b;
-      --success:#22c55e;
-      --danger:#ef4444;
     }
     *{ box-sizing:border-box }
     body{
-      margin:0;
-      background:var(--bg);
-      color:var(--text);
+      margin:0; background:var(--bg); color:var(--text);
       font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     }
     .wrap{ max-width:1120px; margin:0 auto; padding:28px 18px 40px }
     /* Header */
-    .header{
-      display:flex; align-items:center; gap:16px; margin-bottom:18px;
-    }
-    .logo{ width:40px; height:40px; display:block; }
+    .header{ display:flex; align-items:center; gap:14px; margin-bottom:18px; }
+    .logo{ width:40px; height:40px; display:block; object-fit:contain }
     .title{ font-weight:700; font-size:22px; letter-spacing:.2px }
     .tag{ color:var(--muted); font-size:12px; margin-top:2px }
     /* Card / Panels */
@@ -68,24 +63,23 @@
       font-size:13px;
     }
     .hint{ color:var(--muted); font-size:12px; margin-top:6px }
-    .shots{ display:grid; grid-template-columns:repeat(auto-fill, minmax(160px,1fr)); gap:8px; margin-top:10px }
-    .thumb{ border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#0f1115 }
-    .thumb img{ display:block; width:100%; height:auto }
     .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px }
     .chip{ cursor:pointer; background:var(--surface-2); border:1px solid var(--border); color:var(--text); padding:8px 12px; border-radius:999px; font-size:12px }
     .status{ color:var(--muted); font-size:12px }
     .status strong{ color:var(--text) }
-    .spacer{ height:2px }
+    .shots{ display:grid; grid-template-columns:repeat(auto-fill, minmax(160px,1fr)); gap:8px; margin-top:10px }
+    .thumb{ border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#0f1115 }
+    .thumb img{ display:block; width:100%; height:auto }
     footer{ margin-top:18px; color:var(--muted); font-size:12px; text-align:center }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <!-- Header (logo + simple title only) -->
+    <!-- Header -->
     <div class="header">
-      <img src="/logo.png" alt="MediAd" class="logo" />
+      <img src="/logo.png" alt="Mediad logo" class="logo" />
       <div>
-        <div class="title">MediAd AutoDirector</div>
+        <div class="title">Mediad AutoDirector</div>
         <div class="tag">Natural-language browser automation</div>
       </div>
     </div>
@@ -99,8 +93,10 @@
         <button id="runBtn" class="btn primary">Run</button>
         <div id="statusTxt" class="status">Status: <strong>Idle</strong></div>
       </div>
+
+      <!-- Example chips (use “…” instead of specific email) -->
       <div class="chips" id="chips"></div>
-      <div class="hint">Examples: “Screenshot https://www.cnn.com and email to support@mivado.co” · “Save https://example.com as PDF and email to …”</div>
+      <div class="hint" id="examplesHint"></div>
     </div>
 
     <!-- Results -->
@@ -126,7 +122,7 @@
       </div>
     </div>
 
-    <footer>© MediAd</footer>
+    <footer>© Mediad</footer>
   </div>
 
 <script>
@@ -134,7 +130,7 @@
   const API = ""; // same origin
   const $ = s => document.querySelector(s);
 
-  // anonymous id for rate/credits if your backend uses it
+  // simple anon id
   let anonId = localStorage.getItem("autodirector_anon_id");
   if (!anonId){ anonId = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("autodirector_anon_id", anonId); }
 
@@ -150,30 +146,31 @@
   const videoWrap = $("#videoWrap");
   const videoLink = $("#videoLink");
   const chips     = $("#chips");
+  const examplesHint = $("#examplesHint");
 
-  // minimal samples
-  const samples = [
-    "Screenshot https://www.cnn.com and email to support@mivado.co",
-    "Save https://example.com as PDF and email to support@mivado.co",
-    "Forward my last 3 emails to support@mivado.co"
+  // Default examples WITH ellipsis
+  const examples = [
+    "Screenshot https://www.cnn.com and email to …",
+    "Save https://example.com as PDF and email to …",
+    "Forward my last 3 emails to …"
   ];
-  samples.forEach(t=>{
+  examples.forEach(t=>{
     const b = document.createElement("button");
     b.className = "chip";
     b.textContent = t;
     b.onclick = ()=>{ prompt.value = t; };
     chips.appendChild(b);
   });
+  examplesHint.textContent = 'Examples: “Screenshot https://www.cnn.com and email to …” · “Save https://example.com as PDF and email to …”';
 
-  prompt.value = "Screenshot https://www.cnn.com and email to support@mivado.co";
+  // Put a sensible default in the box
+  prompt.value = "Screenshot https://www.cnn.com and email to …";
 
   let flow = null;
   let runId = null;
   let poll = null;
 
-  function setStatus(s){
-    statusTxt.textContent = s;
-  }
+  function setStatus(s){ statusTxt.textContent = s; }
   function setConsole(lines){
     consoleBox.textContent = lines && lines.length ? lines.join("\\n") : "—";
   }
@@ -201,7 +198,7 @@
     try{
       const d = await fetchJSON(API + "/api/plan", { method:"POST", body: JSON.stringify({ prompt: prompt.value }) });
       flow = d.flow || null;
-      flowBox.textContent = flow ? JSON.stringify(flow, null, 2) : "No plan generated. Try rephrasing.";
+      flowBox.textContent = flow ? JSON.stringify(flow, null, 2) : "No plan generated. Replace “…” with a real email and try again.";
       setStatus("Planned");
     }catch{
       setStatus("Plan error");
@@ -244,6 +241,11 @@
 </script>
 </body>
 </html>
+                                                                                
+  
+  
+  
+  
                                                             
   
   
