@@ -497,7 +497,7 @@ async function gmailConnect(){
   if (!user || !pass) throw new Error("GMAIL_USER or GMAIL_APP_PASSWORD not set");
   const imap = new ImapFlow({ host:"imap.gmail.com", port:993, secure:true, auth:{ user, pass } });
   await imap.connect();
-  await imap.mailboxOpen("INBOX"); // <- correct API
+  await imap.mailboxOpen("INBOX"); // correct API
   return imap;
 }
 
@@ -549,6 +549,7 @@ async function forwardNEmails(to, n=1, oldestFirst=false, log=()=>{}){
 // ---------- boot ----------
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=> console.log("AutoDirector service listening on " + PORT));
+
 
 
 
