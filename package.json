@@ -1,8 +1,9 @@
 {
-  "name": "autodirector-backend",
+  "name": "mediad-backend",
   "version": "1.0.0",
-  "type": "module",
   "private": true,
+  "type": "commonjs",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
@@ -11,6 +12,9 @@
     "playwright": "^1.55.0"
   }
 }
+                    
+                      
+  
                     
                       
                       
