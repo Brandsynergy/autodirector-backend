@@ -1,20 +1,29 @@
-# Playwright image has Chrome/Firefox/WebKit preinstalled
+# Use Playwright image with browsers preinstalled
 FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 
 WORKDIR /app
 
+# speed up rebuilds
 COPY package.json package-lock.json* ./
-RUN npm ci || npm install --omit=dev
+RUN npm i --omit=dev
 
-COPY public ./public
-RUN mkdir -p /app/runs
 COPY server.js ./server.js
+COPY public ./public
+
+# the app writes screenshots here
+RUN mkdir -p /app/runs
 
 ENV NODE_ENV=production
-ENV PORT=10000
 EXPOSE 10000
-
 CMD ["node", "server.js"]
+                                                                                                                                            
+  
+  
+  
+  
+  
+  
+  
                                                             
   
   
