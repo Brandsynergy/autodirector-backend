@@ -1,264 +1,100 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mediad AutoDirector</title>
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-      :root{
-        --bg:#0f1115;
-        --elev:#141722;
-        --elev-2:#1a1f2e;
-        --text:#e7ecf3;
-        --muted:#9aa4b2;
-        --brand:#c2a46d; /* warm gold to echo your logo */
-        --ok:#39d98a;
-        --warn:#f5c451;
-        --err:#ff6b6b;
-        --ring: 0 0 0 2px rgba(194,164,109,.35),0 0 0 6px rgba(194,164,109,.12);
-        --radius:14px;
-      }
-      *{box-sizing:border-box}
-      html,body{height:100%}
-      body{
-        margin:0;background:var(--bg);color:var(--text);
-        font:16px/1.45 "Inter",system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-      }
-      .wrap{max-width:1100px;margin:0 auto;padding:28px 18px 60px}
-      header{display:flex;align-items:center;gap:14px;margin-bottom:18px}
-      .logo{
-        width:44px;height:44px;display:inline-block;border-radius:10px;
-        background:linear-gradient(180deg,#cdb47a 0%,#a88d58 100%);position:relative;overflow:hidden;
-        box-shadow:0 6px 18px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.12);
-      }
-      /* Inline “shield” */
-      .logo svg{position:absolute;inset:0;width:100%;height:100%}
-      header h1{font-size:26px;letter-spacing:.2px;margin:0}
-      header .sub{color:var(--muted);font-size:13px;margin-top:2px}
-      .card{background:var(--elev);border:1px solid #23283a;border-radius:var(--radius);padding:14px}
-      .stack{display:grid;gap:14px}
-      .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-      textarea{
-        width:100%;min-height:90px;resize:vertical;color:var(--text);
-        background:var(--elev-2);border:1px solid #262c40;border-radius:12px;
-        padding:14px 16px;outline:none;transition:.15s;
-      }
-      textarea:focus{box-shadow:var(--ring);border-color:#3a4566}
-      .btn{
-        appearance:none;border:0;border-radius:12px;padding:10px 16px;font-weight:600;cursor:pointer;
-        background:#22283a;color:var(--text);transition:.15s;
-      }
-      .btn:hover{background:#283049}
-      .btn.brand{background:var(--brand);color:#111;}
-      .btn.brand:hover{filter:brightness(.97)}
-      .status{font-size:13px;color:var(--muted)}
-      .chips{display:flex;gap:10px;flex-wrap:wrap}
-      .chip{
-        background:#1a2032;border:1px solid #2a3147;color:#c4ccda;border-radius:999px;
-        padding:8px 12px;font-size:13px;cursor:pointer;user-select:none;
-      }
-      .chip:hover{border-color:#3a4360}
-      .grid{
-        display:grid;gap:14px;margin-top:16px;
-        grid-template-columns:1fr; 
-      }
-      @media (min-width:980px){ .grid{grid-template-columns:1fr 1fr;} }
-      .panel h3{margin:0 0 10px 0;font-size:14px;color:#cbd3e1;letter-spacing:.4px;text-transform:uppercase}
-      pre{
-        margin:0;background:#0d1018;border:1px solid #22283a;border-radius:12px;
-        padding:12px;overflow:auto;max-height:420px;
-      }
-      .toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-      .tiny{font-size:12px;color:var(--muted)}
-      .badge{display:inline-flex;align-items:center;gap:8px}
-      .dot{width:8px;height:8px;border-radius:50%}
-      .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.err{background:var(--err)}
-      a.link{color:#9ec5ff;text-decoration:none}
-      a.link:hover{text-decoration:underline}
-      footer{margin-top:28px;color:var(--muted);font-size:12px;text-align:center}
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <header>
-        <span class="logo" aria-hidden="true">
-          <!-- simple inline shield logo with “MEDIAD” -->
-          <svg viewBox="0 0 100 100" role="img" aria-label="Mediad logo">
-            <defs>
-              <clipPath id="c">
-                <path d="M10,20 h80 a6,6 0 0 1 6,6 v33 a10,10 0 0 1 -5,9 L55,89 a10,10 0 0 1 -10,0 L9,68 A10,10 0 0 1 4,59 V26 a6,6 0 0 1 6,-6 z"/>
-              </clipPath>
-            </defs>
-            <rect x="0" y="0" width="100" height="100" fill="transparent"/>
-            <g clip-path="url(#c)">
-              <rect x="0" y="18" width="100" height="22" fill="#0c0f16" opacity=".9"/>
-              <!-- stars -->
-              <g fill="#fff" transform="translate(0,3)">
-                <path d="M20 25 l3-9 3 9 9 0 -7 5 3 9 -8-5 -8 5 3-9 -7-5z" transform="scale(.08) translate(220,130)"/>
-                <path d="M20 25 l3-9 3 9 9 0 -7 5 3 9 -8-5 -8 5 3-9 -7-5z" transform="scale(.08) translate(520,130)"/>
-                <path d="M20 25 l3-9 3 9 9 0 -7 5 3 9 -8-5 -8 5 3-9 -7-5z" transform="scale(.08) translate(820,130)"/>
-              </g>
-              <!-- stripes -->
-              <rect x="10" y="45" width="12" height="60" fill="#fff"/>
-              <rect x="28" y="45" width="12" height="60" fill="#fff" opacity=".92"/>
-              <rect x="46" y="45" width="12" height="60" fill="#fff" opacity=".92"/>
-              <rect x="64" y="45" width="12" height="60" fill="#fff" opacity=".92"/>
-              <rect x="82" y="45" width="8" height="60" fill="#fff" opacity=".92"/>
-            </g>
-          </svg>
-        </span>
-        <div>
-          <h1>Mediad AutoDirector</h1>
-          <div class="sub">Natural-language browser automation</div>
-        </div>
-      </header>
+<head>
+  <meta charset="utf-8" />
+  <title>Mediad AutoDirector</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;background:#0f1115;color:#e8e8ea;margin:0}
+    header{display:flex;align-items:center;gap:12px;padding:18px 24px;border-bottom:1px solid #20242d}
+    header img{height:28px}
+    h1{font-size:20px;margin:0}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    textarea{width:100%;min-height:110px;border:1px solid #2a2f3a;background:#0c0f14;color:#fff;border-radius:10px;padding:14px;font-size:15px}
+    .row{display:flex;gap:12px;margin-top:12px}
+    button{background:#e0b15a;border:none;padding:10px 16px;border-radius:10px;color:#111;font-weight:600;cursor:pointer}
+    .hint{opacity:.75;margin-top:10px;font-size:13px}
+    pre,code{background:#0c0f14;border:1px solid #20242d;border-radius:10px;padding:14px;overflow:auto}
+    .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/logo.png" alt="Mediad logo">
+    <h1>Mediad AutoDirector</h1>
+  </header>
 
-      <section class="card stack">
-        <textarea id="prompt" placeholder="Describe what to automate (e.g., “Screenshot https://www.cnn.com and email to …”)."></textarea>
-        <div class="row">
-          <button class="btn" id="planBtn">Plan</button>
-          <button class="btn brand" id="runBtn">Run</button>
-          <span class="status" id="status">Status: idle</span>
-        </div>
-
-        <div class="chips" id="chips">
-          <span class="chip">Screenshot https://www.cnn.com and email to …</span>
-          <span class="chip">Save https://example.com as PDF and email to …</span>
-          <span class="chip">Forward my last 3 emails to …</span>
-        </div>
-
-        <div class="tiny">Examples above use ellipses (“…”) so you can insert any address you like.</div>
-      </section>
-
-      <div class="grid">
-        <section class="panel card">
-          <div class="toolbar">
-            <h3>Planned Flow</h3>
-            <button class="btn tiny" id="copyJson">Copy JSON</button>
-          </div>
-          <pre id="planBox">{ /* click “Plan” to see steps */ }</pre>
-        </section>
-
-        <section class="panel card">
-          <div class="toolbar">
-            <h3>Run Console</h3>
-            <div class="badge"><span class="dot ok"></span><span class="tiny" id="runHint">Ready</span></div>
-          </div>
-          <pre id="runBox">• Click “Run” to execute the plan.</pre>
-          <div id="resultLinks" class="tiny" style="margin-top:10px;"></div>
-        </section>
-      </div>
-
-      <footer>© <span id="year"></span> Mediad</footer>
+  <div class="wrap">
+    <h3>Describe what to automate</h3>
+    <textarea id="prompt" placeholder='Example: "Screenshot https://www.cnn.com and email it to ..."'></textarea>
+    <div class="row">
+      <button id="run">Run</button>
     </div>
+    <div class="hint">Examples use ellipses (“…”) so you can insert any address you like.</div>
 
-    <script>
-      const $ = (s) => document.querySelector(s);
-      const planBtn = $('#planBtn');
-      const runBtn  = $('#runBtn');
-      const promptEl = $('#prompt');
-      const planBox = $('#planBox');
-      const runBox  = $('#runBox');
-      const statusEl = $('#status');
-      const runHint = $('#runHint');
-      const resultLinks = $('#resultLinks');
+    <div class="cols">
+      <div>
+        <h3>Planned Flow</h3>
+        <pre id="planBox">Click “Run”</pre>
+      </div>
+      <div>
+        <h3>Run Console</h3>
+        <pre id="logBox"></pre>
+      </div>
+    </div>
+  </div>
 
-      // sample chips
-      document.querySelectorAll('.chip').forEach(ch =>
-        ch.addEventListener('click', () => promptEl.value = ch.textContent)
-      );
+<script>
+const runBtn = document.getElementById('run');
+const logBox = document.getElementById('logBox');
+const planBox = document.getElementById('planBox');
 
-      $('#year').textContent = new Date().getFullYear();
+runBtn.onclick = async () => {
+  log('planning…');
+  const text = document.getElementById('prompt').value.trim();
 
-      function setStatus(txt){ statusEl.textContent = 'Status: ' + txt; }
-      function appendRun(line){
-        runBox.textContent += (runBox.textContent.endsWith('\n')?'':'\n') + line;
-        runBox.scrollTop = runBox.scrollHeight;
-      }
+  // Minimal translator: if input starts with "Screenshot <url>"
+  // turn it into our /run step format.
+  let url = (text.match(/https?:\/\/\S+/i) || [])[0];
+  if (!url) {
+    log('No URL detected. Try: Screenshot https://example.com …');
+    return;
+  }
+  const payload = { steps: [{ action: 'screenshot_url', url }] };
+  planBox.textContent = JSON.stringify(payload, null, 2);
 
-      async function postJSON(url, data){
-        const res = await fetch(url, {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(data || {})
-        });
-        // try JSON first, then text
-        const ct = res.headers.get('content-type') || '';
-        if (ct.includes('application/json')) return await res.json();
-        return await res.text();
-      }
+  log('running…');
+  const r = await fetch('/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data = await r.json();
+  if (!r.ok) { log('ERROR: ' + (data.error || r.statusText)); return; }
 
-      planBtn.addEventListener('click', async () => {
-        const prompt = promptEl.value.trim();
-        if (!prompt){ promptEl.focus(); return; }
-        setStatus('planning…');
-        planBox.textContent = 'planning…';
-        try{
-          const data = await postJSON('/plan', { prompt });
-          const pretty = (typeof data === 'string') ? data : JSON.stringify(data, null, 2);
-          planBox.textContent = pretty;
-          setStatus('plan ready');
-        }catch(err){
-          planBox.textContent = 'Error creating plan:\n' + (err?.message || err);
-          setStatus('error');
-        }
-      });
+  const item = data.results?.find(x => x.action === 'screenshot_url');
+  if (item?.url) {
+    log('done: ' + item.url);
+    // also show the image inline
+    const img = new Image();
+    img.src = item.url;
+    img.style.maxWidth = '100%';
+    logBox.appendChild(img);
+  } else {
+    log('done (no image url found)');
+  }
+};
 
-      runBtn.addEventListener('click', async () => {
-        const prompt = promptEl.value.trim();
-        if (!prompt){ promptEl.focus(); return; }
-        setStatus('running…'); runHint.textContent = 'Running'; runBox.textContent = '';
-        resultLinks.innerHTML = '';
-        try{
-          const data = await postJSON('/run', { prompt });
-          const asObj = (typeof data === 'string') ? { message: data } : data;
-
-          // Logs
-          if (Array.isArray(asObj.log)) {
-            asObj.log.forEach(line => appendRun(String(line)));
-          } else if (asObj.message) {
-            appendRun(asObj.message);
-          } else {
-            appendRun(JSON.stringify(asObj, null, 2));
-          }
-
-          // Common result helpers
-          const links = [];
-          if (asObj.screenshot_url){
-            const href = asObj.screenshot_url.startsWith('http')
-              ? asObj.screenshot_url
-              : `${location.origin}/${asObj.screenshot_url}`;
-            links.push(`<a class="link" href="${href}" target="_blank" rel="noopener">Open screenshot</a>`);
-          }
-          if (asObj.pdf_url){
-            const href = asObj.pdf_url.startsWith('http')
-              ? asObj.pdf_url
-              : `${location.origin}/${asObj.pdf_url}`;
-            links.push(`<a class="link" href="${href}" target="_blank" rel="noopener">Open PDF</a>`);
-          }
-          if (links.length){
-            resultLinks.innerHTML = links.join(' · ');
-          }
-          setStatus('done'); runHint.textContent = 'Done';
-        }catch(err){
-          appendRun('ERROR: ' + (err?.message || err));
-          setStatus('error'); runHint.textContent = 'Error';
-        }
-      });
-
-      $('#copyJson').addEventListener('click', async () => {
-        try{
-          await navigator.clipboard.writeText(planBox.textContent);
-          const old = planBox.textContent;
-          planBox.textContent = old + (old.endsWith('\n')?'':'\n') + '— JSON copied —';
-          setTimeout(()=> planBox.textContent = old, 900);
-        }catch{}
-      });
-    </script>
-  </body>
+function log(msg){ logBox.textContent += msg + '\n'; }
+</script>
+</body>
 </html>
+                                                                                                    
+  
+  
+  
+  
+  
                                                                                 
   
   
