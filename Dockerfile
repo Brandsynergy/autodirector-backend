@@ -4,8 +4,9 @@
 FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 
 # 🔁 Bump this value anytime you want to force a clean rebuild on Render
-ARG CACHEBUST=2025-08-27-01
+ARG CACHEBUST=2025-08-28-01
 ENV CACHEBUST=${CACHEBUST}
+
 
 # App directory
 WORKDIR /app
