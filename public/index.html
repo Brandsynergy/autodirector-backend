@@ -1,102 +1,80 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,viewport-fit=cover"
+  />
   <title>Mediad AutoDirector</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body{background:#0b0d10;color:#e6e6e6;font:16px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0}
-    header{display:flex;align-items:center;gap:12px;padding:18px 22px;border-bottom:1px solid #222}
-    header img{height:28px}
-    h1{margin:0;font-size:22px}
-    main{max-width:1100px;margin:24px auto;padding:0 18px}
-    textarea{width:100%;height:120px;background:#111;border:1px solid #2a2a2a;border-radius:10px;color:#e6e6e6;padding:14px;outline:none}
-    button{background:#e0b15f;border:0;color:#111;font-weight:700;border-radius:10px;padding:10px 18px;margin-top:12px;cursor:pointer}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:28px}
-    pre{background:#0f1114;border:1px solid #222;border-radius:10px;padding:14px;overflow:auto;min-height:160px}
-    .muted{opacity:.75}
-    a{color:#e0b15f}
+    :root { color-scheme: dark; }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; background:#0c0d10; color:#e9eaee; }
+    .wrap { max-width: 1040px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 28px; margin: 0 0 8px; display:flex; gap:12px; align-items:center; }
+    .box { background:#12141a; border:1px solid #232633; border-radius:12px; padding:16px; }
+    textarea { width:100%; min-height:120px; font:16px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color:#e9eaee; background:#0f1117; border:1px solid #232633; border-radius:10px; padding:12px; }
+    button { background:#f6c454; color:#0b0d12; border:none; border-radius:10px; padding:10px 16px; font-weight:600; cursor:pointer; }
+    pre { white-space:pre-wrap; word-wrap:break-word; background:#0f1117; border:1px solid #232633; border-radius:10px; padding:12px; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .cols { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    .pillrow { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+    .pill { border:1px dashed #353a4a; border-radius:999px; padding:6px 10px; font-size:12px; color:#b8bdc7; }
   </style>
 </head>
 <body>
-  <header>
-    <img src="/logo.png" alt="Mediad logo" />
+  <div class="wrap">
     <h1>Mediad AutoDirector</h1>
-  </header>
 
-  <main>
-    <h3>Describe what to automate</h3>
-    <textarea id="prompt">Screenshot https://cnn.com and email it to support@mivado.co</textarea>
-    <br />
-    <button id="runBtn">Run</button>
-    <p class="muted">Examples use ellipses (“…”) so you can insert any address you like.</p>
-
-    <div class="grid">
-      <div>
-        <h3>Planned Flow</h3>
-        <pre id="planBox">{ }</pre>
+    <div class="box">
+      <p><strong>Describe what to automate</strong></p>
+      <textarea id="prompt" placeholder="e.g. Get the latest Inc.com links and email them to you@domain.com"></textarea>
+      <div style="margin-top:12px">
+        <button id="run">Run</button>
       </div>
-      <div>
-        <h3>Run Console</h3>
-        <pre id="runBox"></pre>
+      <div class="pillrow" title="Examples">
+        <span class="pill">Screenshot https://cnn.com and email it to you@…</span>
+        <span class="pill">Save https://example.com as PDF and email to you@…</span>
+        <span class="pill">Get the latest links from https://inc.com and email to you@…</span>
       </div>
     </div>
-  </main>
+
+    <div class="cols" style="margin-top:16px">
+      <div class="box">
+        <p><strong>Planned Flow</strong></p>
+        <pre id="plan">{ }</pre>
+      </div>
+      <div class="box">
+        <p><strong>Run Console</strong></p>
+        <pre id="out">idle…</pre>
+      </div>
+    </div>
+  </div>
 
   <script>
     const promptEl = document.getElementById('prompt');
-    const planBox = document.getElementById('planBox');
-    const runBox  = document.getElementById('runBox');
-    const runBtn  = document.getElementById('runBtn');
-
-    async function plan(prompt) {
-      const r = await fetch('/plan', {
+    const planEl = document.getElementById('plan');
+    const outEl = document.getElementById('out');
+    document.getElementById('run').onclick = async () => {
+      outEl.textContent = 'running…';
+      planEl.textContent = '{ }';
+      const body = { prompt: promptEl.value };
+      const res = await fetch('/run', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify(body)
       });
-      return r.json();
-    }
-
-    async function run(steps) {
-      const r = await fetch('/run', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ steps })
-      });
-      return r.json();
-    }
-
-    runBtn.onclick = async () => {
-      runBox.textContent = 'planning…';
-      try {
-        const p = await plan(promptEl.value);
-        if (!p.ok) { runBox.textContent = 'Plan error: ' + p.error; return; }
-        planBox.textContent = JSON.stringify(p, null, 2);
-
-        runBox.textContent = 'running…';
-        const result = await run(p.steps);
-        if (!result.ok) {
-          runBox.textContent = 'Run error: ' + result.error;
-          return;
-        }
-
-        const link = result.image_url || result.lastPublicUrl;
-        if (link) {
-          runBox.innerHTML =
-            'done: <a href="' + link + '" target="_blank">' + link + '</a>\n\n' +
-            (result.log ? JSON.stringify(result.log, null, 2) : '');
-        } else {
-          runBox.textContent = 'done (no image url found)\n' +
-                               (result.log ? JSON.stringify(result.log, null, 2) : '');
-        }
-      } catch (e) {
-        runBox.textContent = 'Unexpected error: ' + e.message;
-      }
+      const data = await res.json();
+      planEl.textContent = JSON.stringify({ ok: data.ok, plan: data.plan, steps: data.steps }, null, 2);
+      outEl.textContent = JSON.stringify(data.results || data, null, 2);
     };
   </script>
 </body>
 </html>
+                                                                                
+  
+  
+  
+  
                                                                                                     
   
   
