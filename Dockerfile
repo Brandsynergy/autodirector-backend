@@ -1,21 +1,21 @@
-# Use Playwright image with browsers preinstalled
+# Dockerfile
 FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 
 WORKDIR /app
-
-# speed up rebuilds
 COPY package.json package-lock.json* ./
-RUN npm i --omit=dev
+RUN npm ci --omit=dev || npm install --omit=dev
 
-COPY server.js ./server.js
 COPY public ./public
-
-# the app writes screenshots here
+COPY server.js ./server.js
 RUN mkdir -p /app/runs
 
-ENV NODE_ENV=production
+ENV PORT=10000
 EXPOSE 10000
 CMD ["node", "server.js"]
+                                                            
+  
+  
+  
                                                                                                                                             
   
   
