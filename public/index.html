@@ -1,94 +1,108 @@
 <!doctype html>
-<html lang="en">
+<html>
 <head>
   <meta charset="utf-8" />
   <title>Mediad AutoDirector</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body{font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;background:#0f1115;color:#e8e8ea;margin:0}
-    header{display:flex;align-items:center;gap:12px;padding:18px 24px;border-bottom:1px solid #20242d}
+    body{background:#0b0d10;color:#e6e6e6;font:16px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0}
+    header{display:flex;align-items:center;gap:12px;padding:18px 22px;border-bottom:1px solid #222}
     header img{height:28px}
-    h1{font-size:20px;margin:0}
-    .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    textarea{width:100%;min-height:110px;border:1px solid #2a2f3a;background:#0c0f14;color:#fff;border-radius:10px;padding:14px;font-size:15px}
-    .row{display:flex;gap:12px;margin-top:12px}
-    button{background:#e0b15a;border:none;padding:10px 16px;border-radius:10px;color:#111;font-weight:600;cursor:pointer}
-    .hint{opacity:.75;margin-top:10px;font-size:13px}
-    pre,code{background:#0c0f14;border:1px solid #20242d;border-radius:10px;padding:14px;overflow:auto}
-    .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+    h1{margin:0;font-size:22px}
+    main{max-width:1100px;margin:24px auto;padding:0 18px}
+    textarea{width:100%;height:120px;background:#111;border:1px solid #2a2a2a;border-radius:10px;color:#e6e6e6;padding:14px;outline:none}
+    button{background:#e0b15f;border:0;color:#111;font-weight:700;border-radius:10px;padding:10px 18px;margin-top:12px;cursor:pointer}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:28px}
+    pre{background:#0f1114;border:1px solid #222;border-radius:10px;padding:14px;overflow:auto;min-height:160px}
+    .muted{opacity:.75}
+    a{color:#e0b15f}
   </style>
 </head>
 <body>
   <header>
-    <img src="/logo.png" alt="Mediad logo">
+    <img src="/logo.png" alt="Mediad logo" />
     <h1>Mediad AutoDirector</h1>
   </header>
 
-  <div class="wrap">
+  <main>
     <h3>Describe what to automate</h3>
-    <textarea id="prompt" placeholder='Example: "Screenshot https://www.cnn.com and email it to ..."'></textarea>
-    <div class="row">
-      <button id="run">Run</button>
-    </div>
-    <div class="hint">Examples use ellipses (“…”) so you can insert any address you like.</div>
+    <textarea id="prompt">Screenshot https://cnn.com and email it to support@mivado.co</textarea>
+    <br />
+    <button id="runBtn">Run</button>
+    <p class="muted">Examples use ellipses (“…”) so you can insert any address you like.</p>
 
-    <div class="cols">
+    <div class="grid">
       <div>
         <h3>Planned Flow</h3>
-        <pre id="planBox">Click “Run”</pre>
+        <pre id="planBox">{ }</pre>
       </div>
       <div>
         <h3>Run Console</h3>
-        <pre id="logBox"></pre>
+        <pre id="runBox"></pre>
       </div>
     </div>
-  </div>
+  </main>
 
-<script>
-const runBtn = document.getElementById('run');
-const logBox = document.getElementById('logBox');
-const planBox = document.getElementById('planBox');
+  <script>
+    const promptEl = document.getElementById('prompt');
+    const planBox = document.getElementById('planBox');
+    const runBox  = document.getElementById('runBox');
+    const runBtn  = document.getElementById('runBtn');
 
-runBtn.onclick = async () => {
-  log('planning…');
-  const text = document.getElementById('prompt').value.trim();
+    async function plan(prompt) {
+      const r = await fetch('/plan', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ prompt })
+      });
+      return r.json();
+    }
 
-  // Minimal translator: if input starts with "Screenshot <url>"
-  // turn it into our /run step format.
-  let url = (text.match(/https?:\/\/\S+/i) || [])[0];
-  if (!url) {
-    log('No URL detected. Try: Screenshot https://example.com …');
-    return;
-  }
-  const payload = { steps: [{ action: 'screenshot_url', url }] };
-  planBox.textContent = JSON.stringify(payload, null, 2);
+    async function run(steps) {
+      const r = await fetch('/run', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ steps })
+      });
+      return r.json();
+    }
 
-  log('running…');
-  const r = await fetch('/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  const data = await r.json();
-  if (!r.ok) { log('ERROR: ' + (data.error || r.statusText)); return; }
+    runBtn.onclick = async () => {
+      runBox.textContent = 'planning…';
+      try {
+        const p = await plan(promptEl.value);
+        if (!p.ok) { runBox.textContent = 'Plan error: ' + p.error; return; }
+        planBox.textContent = JSON.stringify(p, null, 2);
 
-  const item = data.results?.find(x => x.action === 'screenshot_url');
-  if (item?.url) {
-    log('done: ' + item.url);
-    // also show the image inline
-    const img = new Image();
-    img.src = item.url;
-    img.style.maxWidth = '100%';
-    logBox.appendChild(img);
-  } else {
-    log('done (no image url found)');
-  }
-};
+        runBox.textContent = 'running…';
+        const result = await run(p.steps);
+        if (!result.ok) {
+          runBox.textContent = 'Run error: ' + result.error;
+          return;
+        }
 
-function log(msg){ logBox.textContent += msg + '\n'; }
-</script>
+        const link = result.image_url || result.lastPublicUrl;
+        if (link) {
+          runBox.innerHTML =
+            'done: <a href="' + link + '" target="_blank">' + link + '</a>\n\n' +
+            (result.log ? JSON.stringify(result.log, null, 2) : '');
+        } else {
+          runBox.textContent = 'done (no image url found)\n' +
+                               (result.log ? JSON.stringify(result.log, null, 2) : '');
+        }
+      } catch (e) {
+        runBox.textContent = 'Unexpected error: ' + e.message;
+      }
+    };
+  </script>
 </body>
 </html>
+                                                                                                    
+  
+  
+  
+  
+  
                                                                                                     
   
   
