@@ -1,215 +1,145 @@
 // server.js
 import express from "express";
-import path from "node:path";
-import fs from "node:fs";
-import { promises as fsp } from "node:fs";
-import crypto from "node:crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
 import nodemailer from "nodemailer";
 import { chromium } from "playwright";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const app = express();
-const PORT = process.env.PORT || 10000;
-const BASE_URL = process.env.BASE_URL || ""; // optional, will infer if empty
-const RUNS_DIR = path.resolve("runs");
-
-// --- helpers ---------------------------------------------------------------
-
-async function ensureRunsDir() {
-  await fsp.mkdir(RUNS_DIR, { recursive: true });
-  // sanity check write access
-  const test = path.join(RUNS_DIR, ".ok");
-  await fsp.writeFile(test, "ok");
-  await fsp.unlink(test);
-}
-
-function inferBaseUrl(req) {
-  if (BASE_URL) return BASE_URL.replace(/\/$/, "");
-  const proto = req.headers["x-forwarded-proto"] || req.protocol || "https";
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
-  return `${proto}://${host}`;
-}
-
-const emailRegex =
-  /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/;
-const urlRegex =
-  /(https?:\/\/[^\s"']+)/i;
-
-function planFromPrompt(prompt) {
-  const steps = [];
-  const urlMatch = prompt.match(urlRegex);
-  const emailMatch = prompt.match(emailRegex);
-
-  // screenshot intent
-  if (/screenshot|capture|snap|shot/i.test(prompt) && urlMatch) {
-    steps.push({ action: "screenshot_url", url: urlMatch[1] });
-  }
-
-  // pdf intent (optional)
-  if (/pdf/i.test(prompt) && urlMatch) {
-    steps.push({ action: "pdf_url", url: urlMatch[1] });
-  }
-
-  // email intent
-  if (/(email|mail|send)\s+.*\s+to/i.test(prompt) && emailMatch) {
-    steps.push({ action: "email_last", to: emailMatch[1] });
-  }
-
-  // default – if only a URL was given with the word email
-  if (steps.length === 0 && urlMatch) {
-    steps.push({ action: "screenshot_url", url: urlMatch[1] });
-    if (emailMatch) steps.push({ action: "email_last", to: emailMatch[1] });
-  }
-
-  if (steps.length === 0) {
-    // fallback
-    steps.push({ action: "help" });
-  }
-
-  return { steps };
-}
-
-function mailer() {
-  // Expect these on Render:
-  // SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASS, FROM_EMAIL
-  if (!process.env.SMTP_HOST) {
-    return null; // will no-op and log
-  }
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: false,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-}
-
-// --- middleware ------------------------------------------------------------
 
 app.use(express.json({ limit: "1mb" }));
 
-// serve static UI (if you have one)
-app.use(express.static(path.resolve("public")));
+// --- Static assets ---
+app.use("/public", express.static(path.join(__dirname, "public")));
+app.use("/runs", express.static(path.join(__dirname, "runs"), { fallthrough: false }));
 
-// serve the /runs directory as raw files (the important bit)
-app.use(
-  "/runs",
-  express.static(RUNS_DIR, {
-    fallthrough: false,
-    maxAge: "1h",
-    setHeaders(res) {
-      res.setHeader("Cache-Control", "public, max-age=3600, immutable");
-    },
-  })
-);
+// --- Health check ---
+app.get("/health", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
+});
 
-// health
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// --- Frontend ---
+app.get("/", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
-// --- planner ---------------------------------------------------------------
+// --- Helper: email sender (uses Gmail app password) ---
+async function sendEmail({ to, subject, text, attachments = [] }) {
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD; // app password (not your normal login)
+  if (!user || !pass) {
+    throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD env vars.");
+  }
 
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+  });
+
+  await transporter.sendMail({
+    from: user,
+    to,
+    subject,
+    text,
+    attachments,
+  });
+}
+
+// --- Helper: screenshot ---
+async function takeScreenshot(url) {
+  const runsDir = path.join(__dirname, "runs");
+  if (!fs.existsSync(runsDir)) fs.mkdirSync(runsDir, { recursive: true });
+
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const outPath = path.join(runsDir, `${id}-shot.png`);
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.screenshot({ path: outPath, fullPage: true });
+  await browser.close();
+
+  // public URL
+  const publicUrl = `/runs/${path.basename(outPath)}`;
+  return { filePath: outPath, publicUrl };
+}
+
+// --- “Plan” endpoint (very simple planner) ---
 app.post("/plan", async (req, res) => {
   try {
-    const prompt = String(req.body?.prompt || "");
-    const plan = planFromPrompt(prompt);
-    res.json(plan);
+    const prompt = `${req.body?.prompt || ""}`.toLowerCase();
+
+    // Naive parse: "screenshot <url> and email to <address>"
+    const urlMatch = prompt.match(/https?:\/\/\S+/i);
+    const emailMatch = prompt.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+
+    const steps = [];
+    if (urlMatch) steps.push({ action: "screenshot_url", url: urlMatch[0] });
+    if (emailMatch) steps.push({ action: "email_last_screenshot", to: emailMatch[0] });
+
+    res.json({ steps: steps.length ? steps : [{ action: "noop" }] });
   } catch (e) {
-    console.error("plan error", e);
-    res.status(400).json({ error: "Bad prompt" });
+    res.status(500).json({ error: e.message || "plan_failed" });
   }
 });
 
-// --- runner ----------------------------------------------------------------
-
+// --- “Run” endpoint executes steps ---
 app.post("/run", async (req, res) => {
-  const start = Date.now();
+  const logs = [];
   try {
     const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
-    if (!steps.length) return res.status(400).send("No steps");
-
-    await ensureRunsDir();
-    const baseUrl = inferBaseUrl(req);
-    const lines = [];
-    let lastFilePath = null;
-    let lastFileName = null;
-
-    // one Chromium for the whole run
-    const browser = await chromium.launch({
-      args: ["--no-sandbox", "--disable-dev-shm-usage"],
-    });
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    let lastShot = null;
 
     for (const step of steps) {
       if (step.action === "screenshot_url") {
-        const url = step.url;
-        const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-shot.png`;
-        const abs = path.join(RUNS_DIR, id);
-        await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-        await page.screenshot({ path: abs, fullPage: true });
-        lastFilePath = abs;
-        lastFileName = id;
-        lines.push(`done: ${baseUrl}/runs/${id}`);
-      } else if (step.action === "pdf_url") {
-        // optional: simple PDF capture (Chromium only)
-        const url = step.url;
-        const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.pdf`;
-        const abs = path.join(RUNS_DIR, id);
-        await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-        // emulate print to pdf
-        await page.pdf({ path: abs, format: "A4", printBackground: true });
-        lastFilePath = abs;
-        lastFileName = id;
-        lines.push(`done: ${baseUrl}/runs/${id}`);
-      } else if (step.action === "email_last") {
-        if (!lastFilePath || !lastFileName) {
-          lines.push("skip: nothing to email yet");
-          continue;
-        }
-        const to = step.to;
-        const tx = mailer();
-        const from = process.env.FROM_EMAIL || process.env.SMTP_USER || "no-reply@example.com";
-        if (!tx) {
-          console.warn("SMTP not configured – would have emailed:", to);
-          lines.push(`warn: SMTP not configured (set SMTP_* env). Would have emailed ${to}`);
-        } else {
-          await tx.sendMail({
-            from,
-            to,
-            subject: `Mediad AutoDirector result: ${lastFileName}`,
-            text: `Your file is attached.\n\nLink: ${baseUrl}/runs/${lastFileName}`,
-            html: `<p>Your file is attached.</p><p>Link: <a href="${baseUrl}/runs/${lastFileName}">${baseUrl}/runs/${lastFileName}</a></p>`,
-            attachments: [{ path: lastFilePath, filename: lastFileName }],
-          });
-          lines.push(`emailed: ${to}`);
-        }
-      } else if (step.action === "help") {
-        lines.push(
-          `hint: try "Screenshot https://example.com and email it to you@example.com"`
-        );
+        logs.push(`screenshot_url ${step.url}`);
+        const shot = await takeScreenshot(step.url);
+        lastShot = shot;
+        // Return absolute URL to the client
+        const base = process.env.BASE_URL || ""; // set on Render if you want absolute URLs
+        logs.push(`done: ${base}${shot.publicUrl}`);
+      } else if (step.action === "email_last_screenshot" && lastShot) {
+        logs.push(`email_last_screenshot -> ${step.to}`);
+        await sendEmail({
+          to: step.to,
+          subject: "Mediad AutoDirector – screenshot",
+          text: "Attached is your screenshot.",
+          attachments: [{ filename: path.basename(lastShot.filePath), path: lastShot.filePath }],
+        });
+        logs.push("email_sent");
       } else {
-        lines.push(`skip: unknown action "${step.action}"`);
+        logs.push(`skip ${step.action}`);
       }
     }
 
-    await browser.close();
-
-    const ms = Date.now() - start;
-    res.type("text/plain").send(["planning…", "running…", ...lines, `time: ${ms}ms`].join("\n"));
+    res.json({ ok: true, logs });
   } catch (e) {
-    console.error("run error", e);
-    res.status(500).type("text/plain").send("error: " + (e?.message || "Unknown"));
+    logs.push(`ERROR: ${e.message}`);
+    res.status(500).json({ ok: false, logs });
   }
 });
 
-// fallback 404
-app.use((req, res) => res.status(404).type("text/plain").send("Not found"));
+// --- Error fallthrough (keep very simple) ---
+app.use((err, _req, res, _next) => {
+  res.status(500).send("Unknown Error");
+});
 
-// start
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Mediad backend listening on ${PORT}`);
 });
+                                                                                
+  
+  
+  
+  
                                                             
   
   
