@@ -1,10 +1,9 @@
 /**
- * Mediad AutoDirector — server.js (ESM, robust)
- *
- * Env vars:
- *  - OPENAI_API_KEY
- *  - GMAIL_USER
- *  - GMAIL_APP_PASSWORD
+ * Mediad AutoDirector — server.js (final hardening)
+ * - Accepts prompt as body {prompt} or {q}, or query ?prompt=/ ?q=
+ * - /run accepts {steps}, {plan:{steps}}, or just {prompt} and will plan+run.
+ * - Survives missing Content-Type by capturing rawBody and trying to parse JSON.
+ * - Includes image generation (no response_format), screenshots, link extraction, and Gmail send.
  */
 
 import express from "express";
@@ -15,20 +14,30 @@ import { fileURLToPath } from "url";
 import { chromium } from "playwright";
 import nodemailer from "nodemailer";
 
-// -------------------- setup --------------------
+// ------------ paths ------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const ROOT = __dirname;
-const PUBLIC_DIR = path.join(ROOT, "public");
-const RUNS_DIR = path.join(ROOT, "runs");
+const PUBLIC_DIR = path.join(__dirname, "public");
+const RUNS_DIR = path.join(__dirname, "runs");
 if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
 
+// ------------ app ------------
 const app = express();
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
 
-// simple CORS (so any UI shape will work)
+// Capture raw body for cases where Content-Type isn't set
+app.use((req, _res, next) => {
+  req.rawBody = "";
+  req.setEncoding("utf8");
+  req.on("data", chunk => { req.rawBody += chunk; });
+  next();
+});
+
+// Parse JSON when header is correct
+app.use(express.json({ limit: "2mb", type: ["application/json", "application/*+json"] }));
+// Also parse x-www-form-urlencoded (some UIs send this)
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+
+// CORS to be safe for any UI
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -40,60 +49,36 @@ app.use((req, res, next) => {
 app.use("/public", express.static(PUBLIC_DIR));
 app.use("/runs", express.static(RUNS_DIR));
 
-// -------------------- helpers --------------------
-function emailFromText(text) {
-  const m = String(text || "").match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
-  return m ? m[0] : null;
-}
-function urlFromText(text) {
-  const m = String(text || "").match(/https?:\/\/[^\s)]+/i);
-  return m ? m[0] : null;
-}
-function needsScreenshot(text) {
-  return /\bscreenshot\b/i.test(text);
-}
-function needsLinks(text) {
-  return /\b(get|latest)\b.*\blinks?\b/i.test(text) || /\bextract links?\b/i.test(text);
-}
-function needsImage(text) {
-  return /\b(create|generate|make)\b.*\b(image|picture|photo|art)\b/i.test(text);
-}
-function fileId(ext = "png") {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
-}
+// ------------ utils ------------
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+const fileId = (ext = "png") => `${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
+const emailFromText = t => (String(t || "").match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/) || [null])[0];
+const urlFromText = t => (String(t || "").match(/https?:\/\/[^\s)]+/i) || [null])[0];
+const needsScreenshot = t => /\bscreenshot\b/i.test(t);
+const needsLinks = t => /\b(get|latest)\b.*\blinks?\b/i.test(t) || /\bextract links?\b/i.test(t);
+const needsImage = t => /\b(create|generate|make)\b.*\b(image|picture|photo|art)\b/i.test(t);
+
 async function newestFileIn(dir) {
-  const files = (await fsp.readdir(dir)).map(f => path.join(dir, f));
-  if (!files.length) return null;
-  const stats = await Promise.all(files.map(async f => ({ f, t: (await fsp.stat(f)).mtimeMs })));
+  const names = await fsp.readdir(dir);
+  if (!names.length) return null;
+  const stats = await Promise.all(names.map(async n => ({ n, t: (await fsp.stat(path.join(dir, n))).mtimeMs })));
   stats.sort((a, b) => b.t - a.t);
-  return stats[0].f;
-}
-function log(...args) {
-  console.log(new Date().toISOString(), "-", ...args);
+  return path.join(dir, stats[0].n);
 }
 
-// email
-function buildTransport() {
+// email (Gmail app password)
+function smtp() {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) return null;
   return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
+    host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass }
   });
 }
 async function sendEmail({ to, subject, text, attachments }) {
-  const tx = buildTransport();
+  const tx = smtp();
   if (!tx) throw new Error("Email not configured (GMAIL_USER, GMAIL_APP_PASSWORD).");
-  await tx.sendMail({
-    from: process.env.GMAIL_USER,
-    to,
-    subject: subject || "Mediad AutoDirector",
-    text: text || "",
-    attachments: attachments || [],
-  });
+  await tx.sendMail({ from: process.env.GMAIL_USER, to, subject, text, attachments });
 }
 
 // screenshot
@@ -103,13 +88,11 @@ async function screenshotURL(url) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(1000);
-    const filename = fileId("png");
-    const filePath = path.join(RUNS_DIR, filename);
-    await page.screenshot({ path: filePath, fullPage: true });
-    return `/runs/${filename}`;
-  } finally {
-    await browser.close();
-  }
+    const name = fileId("png");
+    const p = path.join(RUNS_DIR, name);
+    await page.screenshot({ path: p, fullPage: true });
+    return `/runs/${name}`;
+  } finally { await browser.close(); }
 }
 
 // extract links
@@ -120,139 +103,131 @@ async function extractLinks(url, count = 5) {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(1000);
     const links = await page.$$eval("a", as =>
-      as
-        .map(a => ({ title: (a.textContent || "").trim(), href: a.href }))
-        .filter(x => x.href && x.title)
-        .slice(0, 100)
-    );
-    return links.slice(0, count);
-  } finally {
-    await browser.close();
-  }
+      as.map(a => ({ title: (a.textContent || "").trim(), href: a.href }))
+        .filter(x => x.href && x.title));
+    return links.slice(0, Math.max(1, Math.min(20, count)));
+  } finally { await browser.close(); }
 }
 
-// OpenAI image generation (NO response_format)
-async function generateImageOpenAI(prompt) {
+// OpenAI image generation (no response_format)
+async function generateImage(prompt) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY not set.");
 
-  const resp = await fetch("https://api.openai.com/v1/images/generations", {
+  const r = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-image-1",
-      prompt,
-      size: "1024x1024",
-    }),
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+    body: JSON.stringify({ model: "gpt-image-1", prompt, size: "1024x1024" })
   });
-
-  const json = await resp.json();
-  if (!resp.ok) {
-    throw new Error(json?.error?.message || "OpenAI image error");
-  }
-
-  const d = json?.data?.[0];
+  const j = await r.json();
+  if (!r.ok) throw new Error(j?.error?.message || "OpenAI image error");
+  const d = j?.data?.[0];
   if (!d) throw new Error("OpenAI returned no image");
 
-  const filename = fileId("png");
-  const filePath = path.join(RUNS_DIR, filename);
+  const name = fileId("png");
+  const p = path.join(RUNS_DIR, name);
 
-  if (d.b64_json) {
-    await fsp.writeFile(filePath, Buffer.from(d.b64_json, "base64"));
-  } else if (d.url) {
-    const imgResp = await fetch(d.url);
-    const buf = Buffer.from(await imgResp.arrayBuffer());
-    await fsp.writeFile(filePath, buf);
-  } else {
-    throw new Error("OpenAI returned no usable image");
-  }
-  return `/runs/${filename}`;
+  if (d.b64_json) await fsp.writeFile(p, Buffer.from(d.b64_json, "base64"));
+  else if (d.url) {
+    const ir = await fetch(d.url);
+    await fsp.writeFile(p, Buffer.from(await ir.arrayBuffer()));
+  } else throw new Error("OpenAI returned no usable image");
+
+  return `/runs/${name}`;
 }
 
 // planner
-function plan(prompt) {
+function planFromPrompt(prompt) {
   const to = emailFromText(prompt);
   const url = urlFromText(prompt);
 
   if (needsImage(prompt)) {
-    const imagePrompt = prompt.trim();
-    const steps = [{ action: "generate_image", prompt: imagePrompt }];
+    const steps = [{ action: "generate_image", prompt }];
     if (to) steps.push({ action: "gmail_send_last", to });
-    return { ok: true, plan: { kind: "image", prompt: imagePrompt, to }, steps };
+    return { ok: true, plan: { kind: "image", to }, steps };
   }
-
   if (needsScreenshot(prompt) && url) {
     const steps = [{ action: "screenshot_url", url }];
     if (to) steps.push({ action: "gmail_send_last", to });
     return { ok: true, plan: { kind: "screenshot", url, to }, steps };
   }
-
   if (needsLinks(prompt) && url) {
-    const countMatch = prompt.match(/\b(\d{1,2})\b/);
-    const count = countMatch ? Math.max(1, Math.min(20, parseInt(countMatch[1], 10))) : 5;
+    const m = prompt.match(/\b(\d{1,2})\b/);
+    const count = m ? Math.max(1, Math.min(20, parseInt(m[1], 10))) : 5;
     const steps = [{ action: "extract_links", url, count }];
     if (to) steps.push({ action: "gmail_send_text", to });
     return { ok: true, plan: { kind: "links", url, to, count }, steps };
   }
-
   if (url) {
     const steps = [{ action: "screenshot_url", url }];
     if (to) steps.push({ action: "gmail_send_last", to });
     return { ok: true, plan: { kind: "screenshot", url, to }, steps };
   }
-
-  return { ok: false, error: "No URL or image instruction detected in prompt." };
+  return { ok: false, error: "Couldn’t detect a URL or an image/link task in the prompt." };
 }
 
-// -------------------- routes --------------------
-app.get("/health", (_req, res) => res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() }));
-
-app.get("/", (_req, res) => {
-  try { res.sendFile(path.join(PUBLIC_DIR, "index.html")); }
-  catch { res.type("text").send("Mediad AutoDirector backend"); }
-});
-
-// /plan tolerant to q|prompt (body or query). Supports POST and GET.
-function getPromptFrom(req) {
-  return (req.body?.prompt ?? req.body?.q ?? req.query?.prompt ?? req.query?.q ?? "").toString();
+// helpers to read prompt/steps no matter how they’re sent
+function getPrompt(req) {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  const q = req.query || {};
+  let p = b.prompt ?? b.q ?? q.prompt ?? q.q ?? "";
+  if (!p && typeof req.rawBody === "string" && req.rawBody.trim()) {
+    try { const parsed = JSON.parse(req.rawBody); p = parsed.prompt ?? parsed.q ?? ""; } catch {}
+  }
+  return String(p || "");
 }
-app.post("/plan", (req, res) => {
-  const prompt = getPromptFrom(req);
-  log("PLAN prompt:", prompt.slice(0, 120));
-  if (!prompt) return res.json({ ok: false, error: "Missing prompt" });
-  const p = plan(prompt);
-  return res.json(p);
-});
-app.get("/plan", (req, res) => {
-  const prompt = getPromptFrom(req);
-  log("PLAN (GET) prompt:", prompt.slice(0, 120));
-  if (!prompt) return res.json({ ok: false, error: "Missing prompt" });
-  const p = plan(prompt);
-  return res.json(p);
-});
 
-// /run accepts steps OR {plan:{steps}} OR just a prompt (it will plan+run)
-function extractSteps(req) {
-  if (Array.isArray(req.body?.steps)) return req.body.steps;
-  if (Array.isArray(req.body?.plan?.steps)) return req.body.plan.steps;
+function getSteps(req) {
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  if (Array.isArray(b.steps)) return b.steps;
+  if (Array.isArray(b?.plan?.steps)) return b.plan.steps;
+
+  // From query (?steps=[...])
   if (typeof req.query?.steps === "string") {
-    try { const parsed = JSON.parse(req.query.steps); if (Array.isArray(parsed)) return parsed; } catch {}
+    try { const x = JSON.parse(req.query.steps); if (Array.isArray(x)) return x; } catch {}
+  }
+
+  // From rawBody
+  if (typeof req.rawBody === "string" && req.rawBody.trim()) {
+    try {
+      const parsed = JSON.parse(req.rawBody);
+      if (Array.isArray(parsed?.steps)) return parsed.steps;
+      if (Array.isArray(parsed?.plan?.steps)) return parsed.plan.steps;
+    } catch {}
   }
   return null;
 }
 
+// ------------ routes ------------
+app.get("/health", (_req, res) => res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() }));
+
+app.get("/", (_req, res) => {
+  const index = path.join(PUBLIC_DIR, "index.html");
+  if (fs.existsSync(index)) return res.sendFile(index);
+  res.type("text").send("Mediad AutoDirector backend");
+});
+
+app.post("/plan", (req, res) => {
+  const prompt = getPrompt(req);
+  if (!prompt) return res.json({ ok: false, error: "Missing prompt." });
+  return res.json(planFromPrompt(prompt));
+});
+
+app.get("/plan", (req, res) => {
+  const prompt = getPrompt(req);
+  if (!prompt) return res.json({ ok: false, error: "Missing prompt." });
+  return res.json(planFromPrompt(prompt));
+});
+
 app.post("/run", async (req, res) => {
   try {
-    let steps = extractSteps(req);
+    let steps = getSteps(req);
 
-    // If no steps but prompt present, do plan+run
+    // If the UI sends just a prompt, plan+run automatically
     if (!steps) {
-      const prompt = getPromptFrom(req);
+      const prompt = getPrompt(req);
       if (prompt) {
-        const p = plan(prompt);
+        const p = planFromPrompt(prompt);
         if (!p.ok) return res.json(p);
         steps = p.steps;
       }
@@ -264,7 +239,6 @@ app.post("/run", async (req, res) => {
 
     const results = [];
     for (const step of steps) {
-      log("RUN step:", step.action);
       switch (step.action) {
         case "screenshot_url": {
           const rel = await screenshotURL(step.url);
@@ -272,8 +246,55 @@ app.post("/run", async (req, res) => {
           break;
         }
         case "generate_image": {
-          const rel = await generateImageOpenAI(step.prompt);
-          results.push({ action:
+          const rel = await generateImage(step.prompt);
+          results.push({ action: step.action, path: rel });
+          break;
+        }
+        case "extract_links": {
+          const links = await extractLinks(step.url, step.count || 5);
+          results.push({ action: step.action, links });
+          break;
+        }
+        case "gmail_send_last": {
+          const file = await newestFileIn(RUNS_DIR);
+          if (!file) throw new Error("Nothing to send yet.");
+          await sendEmail({
+            to: step.to,
+            subject: "Mediad AutoDirector – file",
+            text: "Attached is the latest file.",
+            attachments: [{ filename: path.basename(file), path: file }],
+          });
+          results.push({ action: step.action, to: step.to });
+          break;
+        }
+        case "gmail_send_text": {
+          const linkStep = results.find(r => r.links);
+          const text = linkStep
+            ? linkStep.links.map((l, i) => `${i + 1}. ${l.title}\n${l.href}`).join("\n\n")
+            : (step.text || "No content.");
+          await sendEmail({ to: step.to, subject: "Mediad AutoDirector – links", text });
+          results.push({ action: step.action, to: step.to });
+          break;
+        }
+        default:
+          throw new Error(`Unknown action: ${step.action}`);
+      }
+    }
+    return res.json({ ok: true, results });
+  } catch (e) {
+    log("RUN error:", e?.message || e);
+    return res.json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// ------------ start ------------
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => log(`Mediad backend listening on ${PORT}`));
+                                                                                
+  
+  
+  
+  
                                                                                 
   
   
