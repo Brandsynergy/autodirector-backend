@@ -2,63 +2,113 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mediad AutoDirector</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { background:#0b0b0f; color:#e8e8ee; font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto; padding:24px; }
-    textarea { width:100%; height:120px; background:#16161c; color:#e8e8ee; border:1px solid #2a2a33; border-radius:8px; padding:12px; }
-    button { background:#f0b90b; color:#111; border:0; padding:10px 16px; border-radius:8px; cursor:pointer; font-weight:600; }
-    pre { background:#101018; border:1px solid #242432; padding:12px; border-radius:8px; overflow:auto; }
-    .row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
+    :root { --bg:#0b1020; --card:#121830; --muted:#8aa0b6; --text:#e8eef6; --accent:#4ea1ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+           background:linear-gradient(180deg,#0a0f1f,#0e1426); color:var(--text); }
+    .wrap { max-width: 860px; margin: 40px auto; padding: 0 16px; }
+    .card { background:var(--card); border:1px solid #1f2742; border-radius:16px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.25); }
+    header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+    header img { width:36px; height:36px; object-fit:contain; display:block; }
+    h1 { font-size:22px; margin:0; letter-spacing:0.2px; }
+    p.sub { margin:6px 0 0 0; color:var(--muted); font-size:14px; }
+    label { display:block; font-size:13px; color:#b8c6d6; margin-top:14px; margin-bottom:6px; }
+    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid #243054; background:#0c1327; color:var(--text); }
+    input::placeholder { color:#6f83a0; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    button { margin-top:16px; width:100%; padding:12px 16px; border:0; border-radius:10px; background:var(--accent);
+             color:#00162b; font-weight:700; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .muted { color:var(--muted); font-size:13px; }
+    .out { margin-top:18px; background:#0c1327; border:1px dashed #2a355a; border-radius:12px; padding:14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; color:#bcd1e9; overflow:auto; max-height:240px; }
+    .shot { margin-top:16px; border-radius:12px; border:1px solid #223056; max-width:100%; display:none; }
   </style>
 </head>
 <body>
-  <h1>Mediad AutoDirector</h1>
-  <p>Type what you want to automate (include a URL and/or an email address where relevant).</p>
-  <textarea id="prompt">Screenshot https://cnn.com and email it to you@example.com</textarea>
-  <div style="margin-top:12px;"><button id="runBtn">Run</button></div>
-  <div class="row">
-    <div>
-      <h3>Planned Flow</h3>
-      <pre id="planBox"></pre>
-    </div>
-    <div>
-      <h3>Run Console</h3>
-      <pre id="runBox"></pre>
+  <div class="wrap">
+    <div class="card">
+      <header>
+        <!-- Put /public/logo.png in your repo; this hides the image if it’s missing -->
+        <img src="/logo.png" alt="Mediad" onerror="this.style.display='none'">
+        <div>
+          <h1>Mediad AutoDirector</h1>
+          <p class="sub">Capture a web page and email the screenshot.</p>
+        </div>
+      </header>
+
+      <div class="row">
+        <div>
+          <label>Website URL</label>
+          <input id="url" placeholder="https://www.cnn.com" />
+        </div>
+        <div>
+          <label>Destination email</label>
+          <input id="email" placeholder="you@example.com (optional)" />
+        </div>
+      </div>
+
+      <button id="go">Capture & Email</button>
+      <p class="muted">Tip: if you leave the email blank, the server will use <code>GMAIL_USER</code>.</p>
+
+      <div id="out" class="out"></div>
+      <img id="shot" class="shot" alt="Screenshot result"/>
     </div>
   </div>
-<script>
-async function plan(prompt) {
-  const r = await fetch('/plan', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ prompt })
-  });
-  return r.json();
-}
-async function runSteps(steps) {
-  const r = await fetch('/run', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ steps })
-  });
-  return r.json();
-}
-document.getElementById('runBtn').onclick = async () => {
-  const prompt = document.getElementById('prompt').value.trim();
-  document.getElementById('planBox').textContent = 'planning…';
-  document.getElementById('runBox').textContent = '';
 
-  const p = await plan(prompt);
-  document.getElementById('planBox').textContent = JSON.stringify(p, null, 2);
-  if (!p.ok) { document.getElementById('runBox').textContent = JSON.stringify(p, null, 2); return; }
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const out = $("out");
+    const btn = $("go");
+    const img = $("shot");
 
-  const rr = await runSteps(p.steps);
-  document.getElementById('runBox').textContent = JSON.stringify(rr, null, 2);
-};
-</script>
+    function log(obj) {
+      out.textContent = JSON.stringify(obj, null, 2);
+    }
+
+    btn.onclick = async () => {
+      const url = $("url").value.trim();
+      const email = $("email").value.trim();
+      img.style.display = "none";
+      out.textContent = "";
+      if (!url) { log({ ok:false, error:"Please enter a URL." }); return; }
+
+      btn.disabled = true; btn.textContent = "Working...";
+
+      try {
+        // Build steps directly
+        const steps = [{ action: "screenshot_url", url }];
+        if (email) steps.push({ action: "gmail_send_last", to: email });
+        else steps.push({ action: "gmail_send_last" });
+
+        const resp = await fetch("/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ steps })
+        });
+        const data = await resp.json();
+        log(data);
+
+        const shot = data?.results?.find(r => r.action === "screenshot_url")?.path;
+        if (shot) {
+          img.src = shot;
+          img.style.display = "block";
+        }
+      } catch (e) {
+        log({ ok:false, error: String(e) });
+      } finally {
+        btn.disabled = false; btn.textContent = "Capture & Email";
+      }
+    };
+  </script>
 </body>
 </html>
+                    
+                      
+                      
+  
                                                             
   
   
