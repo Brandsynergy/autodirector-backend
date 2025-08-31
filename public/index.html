@@ -2,74 +2,67 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width,initial-scale=1,viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mediad AutoDirector</title>
   <style>
-    :root { color-scheme: dark; }
-    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; background:#0c0d10; color:#e9eaee; }
-    .wrap { max-width: 1040px; margin: 40px auto; padding: 0 16px; }
-    h1 { font-size: 28px; margin: 0 0 8px; display:flex; gap:12px; align-items:center; }
-    .box { background:#12141a; border:1px solid #232633; border-radius:12px; padding:16px; }
-    textarea { width:100%; min-height:120px; font:16px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color:#e9eaee; background:#0f1117; border:1px solid #232633; border-radius:10px; padding:12px; }
-    button { background:#f6c454; color:#0b0d12; border:none; border-radius:10px; padding:10px 16px; font-weight:600; cursor:pointer; }
-    pre { white-space:pre-wrap; word-wrap:break-word; background:#0f1117; border:1px solid #232633; border-radius:10px; padding:12px; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .cols { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
-    .pillrow { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-    .pill { border:1px dashed #353a4a; border-radius:999px; padding:6px 10px; font-size:12px; color:#b8bdc7; }
+    body { background:#0b0b0f; color:#e8e8ee; font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto; padding:24px; }
+    textarea { width:100%; height:120px; background:#16161c; color:#e8e8ee; border:1px solid #2a2a33; border-radius:8px; padding:12px; }
+    button { background:#f0b90b; color:#111; border:0; padding:10px 16px; border-radius:8px; cursor:pointer; font-weight:600; }
+    pre { background:#101018; border:1px solid #242432; padding:12px; border-radius:8px; overflow:auto; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Mediad AutoDirector</h1>
-
-    <div class="box">
-      <p><strong>Describe what to automate</strong></p>
-      <textarea id="prompt" placeholder="e.g. Get the latest Inc.com links and email them to you@domain.com"></textarea>
-      <div style="margin-top:12px">
-        <button id="run">Run</button>
-      </div>
-      <div class="pillrow" title="Examples">
-        <span class="pill">Screenshot https://cnn.com and email it to you@…</span>
-        <span class="pill">Save https://example.com as PDF and email to you@…</span>
-        <span class="pill">Get the latest links from https://inc.com and email to you@…</span>
-      </div>
+  <h1>Mediad AutoDirector</h1>
+  <p>Type what you want to automate (include a URL and/or an email address where relevant).</p>
+  <textarea id="prompt">Screenshot https://cnn.com and email it to you@example.com</textarea>
+  <div style="margin-top:12px;"><button id="runBtn">Run</button></div>
+  <div class="row">
+    <div>
+      <h3>Planned Flow</h3>
+      <pre id="planBox"></pre>
     </div>
-
-    <div class="cols" style="margin-top:16px">
-      <div class="box">
-        <p><strong>Planned Flow</strong></p>
-        <pre id="plan">{ }</pre>
-      </div>
-      <div class="box">
-        <p><strong>Run Console</strong></p>
-        <pre id="out">idle…</pre>
-      </div>
+    <div>
+      <h3>Run Console</h3>
+      <pre id="runBox"></pre>
     </div>
   </div>
+<script>
+async function plan(prompt) {
+  const r = await fetch('/plan', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ prompt })
+  });
+  return r.json();
+}
+async function runSteps(steps) {
+  const r = await fetch('/run', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ steps })
+  });
+  return r.json();
+}
+document.getElementById('runBtn').onclick = async () => {
+  const prompt = document.getElementById('prompt').value.trim();
+  document.getElementById('planBox').textContent = 'planning…';
+  document.getElementById('runBox').textContent = '';
 
-  <script>
-    const promptEl = document.getElementById('prompt');
-    const planEl = document.getElementById('plan');
-    const outEl = document.getElementById('out');
-    document.getElementById('run').onclick = async () => {
-      outEl.textContent = 'running…';
-      planEl.textContent = '{ }';
-      const body = { prompt: promptEl.value };
-      const res = await fetch('/run', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(body)
-      });
-      const data = await res.json();
-      planEl.textContent = JSON.stringify({ ok: data.ok, plan: data.plan, steps: data.steps }, null, 2);
-      outEl.textContent = JSON.stringify(data.results || data, null, 2);
-    };
-  </script>
+  const p = await plan(prompt);
+  document.getElementById('planBox').textContent = JSON.stringify(p, null, 2);
+  if (!p.ok) { document.getElementById('runBox').textContent = JSON.stringify(p, null, 2); return; }
+
+  const rr = await runSteps(p.steps);
+  document.getElementById('runBox').textContent = JSON.stringify(rr, null, 2);
+};
+</script>
 </body>
 </html>
+                                                            
+  
+  
+  
                                                                                 
   
   
