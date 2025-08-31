@@ -1,5 +1,5 @@
 // server.js (ESM)
-// Express backend for Mediad AutoDirector
+// Mediad AutoDirector backend: serves a small UI and supports screenshot + email
 
 import express from "express";
 import cors from "cors";
@@ -20,31 +20,24 @@ app.use(express.json({ limit: "1mb" }));
 const PORT = process.env.PORT || 10000;
 const SERVICE_NAME = process.env.SERVICE_NAME || "mediad-autodirector";
 
-// Where screenshots are stored
+// Ensure screenshot folder exists
 const RUNS_DIR = path.join(__dirname, "runs");
 fs.mkdirSync(RUNS_DIR, { recursive: true });
 
-// Serve /runs as static so you can open images in the browser
+// Serve static UI from /public and screenshots from /runs
+app.use(express.static(path.join(__dirname, "public"), { index: "index.html" }));
 app.use("/runs", express.static(RUNS_DIR, { maxAge: "1d" }));
 
-// Keep track of the last artifact path for gmail_send_last
+// Track last screenshot for email step
 let lastArtifactPath = null;
 
-// ---------- Utilities ----------
+// ---------- Helpers ----------
 function newId(ext = ".png") {
   const stamp = Date.now();
   const rand = Math.random().toString(16).slice(2, 10);
   return `${stamp}-${rand}${ext}`;
 }
 
-function findFirstUrl(text) {
-  if (!text) return null;
-  const m = text.match(/https?:\/\/[^\s"')]+/i);
-  return m ? m[0] : null;
-}
-
-// Create a single Chromium browser to reuse between runs.
-// (Safer on memory than launching for each step.)
 let browserPromise = null;
 async function getBrowser() {
   if (!browserPromise) {
@@ -56,7 +49,6 @@ async function getBrowser() {
   return browserPromise;
 }
 
-// Screenshot helper
 async function takeScreenshot(url) {
   const browser = await getBrowser();
   const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
@@ -70,25 +62,18 @@ async function takeScreenshot(url) {
   await page.close();
   await context.close();
 
-  // Save for gmail_send_last
   lastArtifactPath = filePath;
-
-  // Return a URL path that the client can open
-  const publicPath = `/runs/${id}`;
-  return publicPath;
+  return `/runs/${id}`;
 }
 
-// Email helper
 async function sendEmailWithLast(to) {
   if (!lastArtifactPath || !fs.existsSync(lastArtifactPath)) {
-    throw new Error("No image available to send — run screenshot_url first.");
+    throw new Error("No screenshot available to send. Capture one first.");
   }
-
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
-
   if (!user || !pass) {
-    throw new Error("GMAIL_USER and/or GMAIL_APP_PASSWORD are not set in environment variables.");
+    throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD environment variables.");
   }
 
   const transporter = nodemailer.createTransport({
@@ -98,111 +83,94 @@ async function sendEmailWithLast(to) {
     auth: { user, pass },
   });
 
-  const filename = path.basename(lastArtifactPath);
-
   await transporter.sendMail({
     from: `"Mediad AutoDirector" <${user}>`,
     to,
-    subject: "Your requested screenshot",
-    text: `Please find the requested screenshot attached.\n\nDirect link (if accessible): ${process.env.BASE_URL ? process.env.BASE_URL + "/runs/" + filename : "(no BASE_URL set)"}\n`,
-    attachments: [
-      {
-        filename,
-        path: lastArtifactPath,
-      },
-    ],
+    subject: "Requested screenshot",
+    text: "See attached screenshot.",
+    attachments: [{ filename: path.basename(lastArtifactPath), path: lastArtifactPath }],
   });
 }
 
-// ---------- Routes ----------
+// ---------- API ----------
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: SERVICE_NAME, time: new Date().toISOString() });
 });
 
-/**
- * Very simple planner:
- * - If prompt contains a URL, we plan to screenshot it and email it to the detected address
- *   (or fall back to GMAIL_USER if no email was provided in the prompt).
- */
+// Simple “planner” (optional)
 app.post("/plan", (req, res) => {
-  try {
-    const prompt = (req.body?.prompt || "").trim();
-    if (!prompt) return res.json({ ok: false, error: "Missing 'prompt'." });
+  const prompt = (req.body?.prompt || "").trim();
+  const url = prompt.match(/https?:\/\/[^\s"')]+/i)?.[0];
+  const email = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]
+    || process.env.GMAIL_USER || "you@example.com";
+  if (!url) return res.json({ ok: false, error: "No URL found in prompt." });
 
-    const url = findFirstUrl(prompt);
-    if (!url) {
-      return res.json({ ok: false, error: "No URL detected in your prompt." });
-    }
-
-    // Try to spot an email address in the prompt
-    const emailMatch = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    const to = emailMatch ? emailMatch[0] : process.env.GMAIL_USER || "you@example.com";
-
-    const plan = { kind: "screenshot", url, to };
-    const steps = [
-      { action: "screenshot_url", url },
-      { action: "gmail_send_last", to },
-    ];
-
-    res.json({ ok: true, plan, steps });
-  } catch (err) {
-    console.error("Error in /plan:", err);
-    res.status(500).json({ ok: false, error: String(err) });
-  }
+  const steps = [
+    { action: "screenshot_url", url },
+    { action: "gmail_send_last", to: email },
+  ];
+  res.json({ ok: true, plan: { kind: "screenshot", url, to: email }, steps });
 });
 
-/**
- * Execute steps:
- * Supported actions:
- * - screenshot_url { url }
- * - gmail_send_last { to }
- */
+// Execute steps
 app.post("/run", async (req, res) => {
   try {
     const steps = req.body?.steps;
     if (!Array.isArray(steps) || steps.length === 0) {
-      return res.json({ ok: false, error: "No steps provided" });
+      return res.json({ ok: false, error: "No steps provided." });
     }
-
     const results = [];
     for (const step of steps) {
-      const action = step?.action;
-
-      if (action === "screenshot_url") {
+      if (step.action === "screenshot_url") {
         if (!step.url) throw new Error("screenshot_url requires 'url'.");
         const publicPath = await takeScreenshot(step.url);
-        results.push({ action, path: publicPath });
-
-      } else if (action === "gmail_send_last") {
-        const to = step?.to || process.env.GMAIL_USER;
-        if (!to) throw new Error("gmail_send_last requires 'to' or GMAIL_USER env.");
+        results.push({ action: "screenshot_url", path: publicPath });
+      } else if (step.action === "gmail_send_last") {
+        const to = step.to || process.env.GMAIL_USER;
+        if (!to) throw new Error("gmail_send_last requires 'to' or set GMAIL_USER.");
         await sendEmailWithLast(to);
-        results.push({ action, to });
-
+        results.push({ action: "gmail_send_last", to });
       } else {
-        throw new Error(`Unsupported action: ${action}`);
+        throw new Error(`Unsupported action: ${step.action}`);
       }
     }
-
     res.json({ ok: true, results });
   } catch (err) {
     console.error("Error in /run:", err);
-    res.status(500).json({ ok: false, error: String(err) });
+    res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 
-// ---------- Global error logging ----------
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled rejection:", reason);
-});
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught exception:", err);
+// Friendly root fallback (serves UI even if index isn’t auto-resolved)
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// ---------- Start ----------
+// 404 JSON for unknown API routes (keeps UI friendly)
+app.use((req, res) => {
+  res.status(404).json({ ok: false, error: "Not found" });
+});
+
+// Error logging
+process.on("unhandledRejection", (r) => console.error("Unhandled rejection:", r));
+process.on("uncaughtException", (e) => console.error("Uncaught exception:", e));
+
+// Start
 app.listen(PORT, () => {
   console.log(`Mediad backend listening on ${PORT}`);
 });
+                                                                                                                                                                                                                          
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
                                                                                                     
   
   
