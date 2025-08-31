@@ -1,12 +1,10 @@
 /**
- * Mediad AutoDirector — server.js (ESM version)
+ * Mediad AutoDirector — server.js (ESM, robust)
  *
- * Required env vars:
+ * Env vars:
  *  - OPENAI_API_KEY
  *  - GMAIL_USER
  *  - GMAIL_APP_PASSWORD
- *
- * Base image: mcr.microsoft.com/playwright:v1.55.0-jammy
  */
 
 import express from "express";
@@ -17,84 +15,68 @@ import { fileURLToPath } from "url";
 import { chromium } from "playwright";
 import nodemailer from "nodemailer";
 
-// --- __dirname in ESM
+// -------------------- setup --------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- paths
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const RUNS_DIR = path.join(ROOT, "runs");
-
-// --- ensure runs dir exists
-if (!fs.existsSync(RUNS_DIR)) {
-  fs.mkdirSync(RUNS_DIR, { recursive: true });
-}
+if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// static
+// simple CORS (so any UI shape will work)
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
+
 app.use("/public", express.static(PUBLIC_DIR));
 app.use("/runs", express.static(RUNS_DIR));
 
-// --- health
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
-});
-
-// --- basic index
-app.get("/", async (_req, res) => {
-  try {
-    res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-  } catch {
-    res.type("text").send("Mediad AutoDirector backend");
-  }
-});
-
-// ---- helpers ---------------------------------------------------------------
-
+// -------------------- helpers --------------------
 function emailFromText(text) {
-  const m = text.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
+  const m = String(text || "").match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
   return m ? m[0] : null;
 }
-
 function urlFromText(text) {
-  const m = text.match(/https?:\/\/[^\s)]+/i);
+  const m = String(text || "").match(/https?:\/\/[^\s)]+/i);
   return m ? m[0] : null;
 }
-
 function needsScreenshot(text) {
   return /\bscreenshot\b/i.test(text);
 }
-
 function needsLinks(text) {
   return /\b(get|latest)\b.*\blinks?\b/i.test(text) || /\bextract links?\b/i.test(text);
 }
-
 function needsImage(text) {
   return /\b(create|generate|make)\b.*\b(image|picture|photo|art)\b/i.test(text);
 }
-
 function fileId(ext = "png") {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
 }
-
 async function newestFileIn(dir) {
   const files = (await fsp.readdir(dir)).map(f => path.join(dir, f));
-  if (files.length === 0) return null;
+  if (!files.length) return null;
   const stats = await Promise.all(files.map(async f => ({ f, t: (await fsp.stat(f)).mtimeMs })));
   stats.sort((a, b) => b.t - a.t);
   return stats[0].f;
 }
+function log(...args) {
+  console.log(new Date().toISOString(), "-", ...args);
+}
 
-// -- email (SMTP via Gmail App Password)
+// email
 function buildTransport() {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) return null;
-
   return nodemailer.createTransport({
     host: "smtp.gmail.com",
     port: 465,
@@ -102,14 +84,11 @@ function buildTransport() {
     auth: { user, pass },
   });
 }
-
 async function sendEmail({ to, subject, text, attachments }) {
-  const transporter = buildTransport();
-  if (!transporter) throw new Error("Email not configured: set GMAIL_USER and GMAIL_APP_PASSWORD");
-
-  const from = process.env.GMAIL_USER;
-  await transporter.sendMail({
-    from,
+  const tx = buildTransport();
+  if (!tx) throw new Error("Email not configured (GMAIL_USER, GMAIL_APP_PASSWORD).");
+  await tx.sendMail({
+    from: process.env.GMAIL_USER,
     to,
     subject: subject || "Mediad AutoDirector",
     text: text || "",
@@ -117,7 +96,7 @@ async function sendEmail({ to, subject, text, attachments }) {
   });
 }
 
-// -- screenshot via Playwright
+// screenshot
 async function screenshotURL(url) {
   const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
@@ -133,14 +112,13 @@ async function screenshotURL(url) {
   }
 }
 
-// -- extract top links using Playwright
+// extract links
 async function extractLinks(url, count = 5) {
   const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.waitForTimeout(1000);
-
     const links = await page.$$eval("a", as =>
       as
         .map(a => ({ title: (a.textContent || "").trim(), href: a.href }))
@@ -153,10 +131,10 @@ async function extractLinks(url, count = 5) {
   }
 }
 
-// -- OpenAI Image Generation (NO response_format)
+// OpenAI image generation (NO response_format)
 async function generateImageOpenAI(prompt) {
   const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("OPENAI_API_KEY not set");
+  if (!key) throw new Error("OPENAI_API_KEY not set.");
 
   const resp = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
@@ -168,7 +146,6 @@ async function generateImageOpenAI(prompt) {
       model: "gpt-image-1",
       prompt,
       size: "1024x1024",
-      // NO response_format here
     }),
   });
 
@@ -192,17 +169,14 @@ async function generateImageOpenAI(prompt) {
   } else {
     throw new Error("OpenAI returned no usable image");
   }
-
   return `/runs/${filename}`;
 }
 
-// ---- planner ---------------------------------------------------------------
-
+// planner
 function plan(prompt) {
   const to = emailFromText(prompt);
   const url = urlFromText(prompt);
 
-  // generate image
   if (needsImage(prompt)) {
     const imagePrompt = prompt.trim();
     const steps = [{ action: "generate_image", prompt: imagePrompt }];
@@ -210,14 +184,12 @@ function plan(prompt) {
     return { ok: true, plan: { kind: "image", prompt: imagePrompt, to }, steps };
   }
 
-  // screenshot
   if (needsScreenshot(prompt) && url) {
     const steps = [{ action: "screenshot_url", url }];
     if (to) steps.push({ action: "gmail_send_last", to });
     return { ok: true, plan: { kind: "screenshot", url, to }, steps };
   }
 
-  // extract links
   if (needsLinks(prompt) && url) {
     const countMatch = prompt.match(/\b(\d{1,2})\b/);
     const count = countMatch ? Math.max(1, Math.min(20, parseInt(countMatch[1], 10))) : 5;
@@ -226,101 +198,87 @@ function plan(prompt) {
     return { ok: true, plan: { kind: "links", url, to, count }, steps };
   }
 
-  // fallback for URL-only prompts
   if (url) {
     const steps = [{ action: "screenshot_url", url }];
     if (to) steps.push({ action: "gmail_send_last", to });
     return { ok: true, plan: { kind: "screenshot", url, to }, steps };
   }
 
-  return {
-    ok: false,
-    error:
-      "I couldn't detect a supported action. Include a URL for screenshots/links, or a prompt to create an image, and (optionally) an email address.",
-  };
+  return { ok: false, error: "No URL or image instruction detected in prompt." };
 }
 
-// ---- API endpoints ---------------------------------------------------------
+// -------------------- routes --------------------
+app.get("/health", (_req, res) => res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() }));
 
-app.post("/plan", (req, res) => {
-  try {
-    const prompt = (req.body?.prompt || "").trim();
-    if (!prompt) return res.json({ ok: false, error: "Missing prompt" });
-    return res.json(plan(prompt));
-  } catch (err) {
-    return res.json({ ok: false, error: err.message || String(err) });
-  }
+app.get("/", (_req, res) => {
+  try { res.sendFile(path.join(PUBLIC_DIR, "index.html")); }
+  catch { res.type("text").send("Mediad AutoDirector backend"); }
 });
 
-app.post("/run", async (req, res) => {
-  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
-  if (!steps.length) return res.json({ ok: false, error: "No steps provided" });
+// /plan tolerant to q|prompt (body or query). Supports POST and GET.
+function getPromptFrom(req) {
+  return (req.body?.prompt ?? req.body?.q ?? req.query?.prompt ?? req.query?.q ?? "").toString();
+}
+app.post("/plan", (req, res) => {
+  const prompt = getPromptFrom(req);
+  log("PLAN prompt:", prompt.slice(0, 120));
+  if (!prompt) return res.json({ ok: false, error: "Missing prompt" });
+  const p = plan(prompt);
+  return res.json(p);
+});
+app.get("/plan", (req, res) => {
+  const prompt = getPromptFrom(req);
+  log("PLAN (GET) prompt:", prompt.slice(0, 120));
+  if (!prompt) return res.json({ ok: false, error: "Missing prompt" });
+  const p = plan(prompt);
+  return res.json(p);
+});
 
-  const results = [];
+// /run accepts steps OR {plan:{steps}} OR just a prompt (it will plan+run)
+function extractSteps(req) {
+  if (Array.isArray(req.body?.steps)) return req.body.steps;
+  if (Array.isArray(req.body?.plan?.steps)) return req.body.plan.steps;
+  if (typeof req.query?.steps === "string") {
+    try { const parsed = JSON.parse(req.query.steps); if (Array.isArray(parsed)) return parsed; } catch {}
+  }
+  return null;
+}
+
+app.post("/run", async (req, res) => {
   try {
+    let steps = extractSteps(req);
+
+    // If no steps but prompt present, do plan+run
+    if (!steps) {
+      const prompt = getPromptFrom(req);
+      if (prompt) {
+        const p = plan(prompt);
+        if (!p.ok) return res.json(p);
+        steps = p.steps;
+      }
+    }
+
+    if (!steps || !steps.length) {
+      return res.json({ ok: false, error: "No steps provided" });
+    }
+
+    const results = [];
     for (const step of steps) {
+      log("RUN step:", step.action);
       switch (step.action) {
         case "screenshot_url": {
-          if (!step.url) throw new Error("screenshot_url requires 'url'");
           const rel = await screenshotURL(step.url);
           results.push({ action: step.action, path: rel });
           break;
         }
         case "generate_image": {
-          if (!step.prompt) throw new Error("generate_image requires 'prompt'");
           const rel = await generateImageOpenAI(step.prompt);
-          results.push({ action: step.action, path: rel });
-          break;
-        }
-        case "extract_links": {
-          if (!step.url) throw new Error("extract_links requires 'url'");
-          const links = await extractLinks(step.url, step.count || 5);
-          results.push({ action: step.action, links });
-          break;
-        }
-        case "gmail_send_last": {
-          if (!step.to) throw new Error("gmail_send_last requires 'to'");
-          const newest = await newestFileIn(RUNS_DIR);
-          if (!newest) throw new Error("Nothing to send (no files in /runs yet)");
-          await sendEmail({
-            to: step.to,
-            subject: "Mediad AutoDirector – file",
-            text: "Attached is the latest file.",
-            attachments: [{ filename: path.basename(newest), path: newest }],
-          });
-          results.push({ action: step.action, to: step.to });
-          break;
-        }
-        case "gmail_send_text": {
-          if (!step.to) throw new Error("gmail_send_text requires 'to'");
-          const linkStep = results.find(r => r.links);
-          const body = linkStep
-            ? linkStep.links.map((l, i) => `${i + 1}. ${l.title}\n${l.href}`).join("\n\n")
-            : (step.text || "No content.");
-          await sendEmail({
-            to: step.to,
-            subject: "Mediad AutoDirector – links",
-            text: body,
-          });
-          results.push({ action: step.action, to: step.to });
-          break;
-        }
-        default:
-          throw new Error(`Unknown action: ${step.action}`);
-      }
-    }
-
-    return res.json({ ok: true, results });
-  } catch (err) {
-    return res.json({ ok: false, error: err.message || String(err), results });
-  }
-});
-
-// --- start
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`Mediad backend listening on ${PORT}`);
-});
+          results.push({ action:
+                                                                                
+  
+  
+  
+  
                                                                                 
   
   
