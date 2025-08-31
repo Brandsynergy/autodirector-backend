@@ -1,4 +1,4 @@
-// server.js  — adds “search then scrape” when no URL is present
+// server.js — adds “image generation” plan (OpenAI or Stability AI) + keeps URL actions
 import express from "express";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -22,8 +22,7 @@ app.use("/public", express.static(path.join(__dirname, "public")));
 
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-/* ------------------------ email helpers ------------------------ */
-
+/* ----------------------------- email ----------------------------- */
 function getTransport() {
   const { GMAIL_USER, GMAIL_APP_PASSWORD } = process.env;
   if (!GMAIL_USER || !GMAIL_APP_PASSWORD) return null;
@@ -34,7 +33,6 @@ function getTransport() {
     auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
   });
 }
-
 async function sendEmail({ to, subject, text, attachments = [] }) {
   const tx = getTransport();
   if (!tx) {
@@ -49,8 +47,7 @@ async function sendEmail({ to, subject, text, attachments = [] }) {
   return { ok: true };
 }
 
-/* ------------------------ browser helpers ---------------------- */
-
+/* ------------------------- browser utils ------------------------- */
 async function withBrowser(fn) {
   const browser = await chromium.launch({ args: ["--no-sandbox"] });
   try {
@@ -69,42 +66,25 @@ async function withBrowser(fn) {
     await browser.close();
   }
 }
-
 async function acceptCookieBanners(page) {
-  const candidates = [
+  const selectors = [
     '#onetrust-accept-btn-handler',
-    '#onetrust-accept-btn',
-    'button[aria-label*="accept" i]',
-    'button[aria-label*="agree" i]',
-    'button[aria-label*="consent" i]',
     'button:has-text("Accept")',
     'button:has-text("I Accept")',
     'button:has-text("Agree")',
-    'button:has-text("Agree & Continue")',
-    'button:has-text("Consent")',
-    'button:has-text("Allow all")',
-    'button:has-text("OK")',
-    '.accept-cookies, .cookie-accept, .ot-sdk-button',
+    '[aria-label*="accept" i]',
+    '.cookie-accept',
   ];
-  try {
-    await page.waitForTimeout(1200);
-    for (const sel of candidates) {
+  await page.waitForTimeout(800);
+  for (const sel of selectors) {
+    try {
       const el = await page.$(sel);
-      if (el) {
-        await el.click({ force: true, timeout: 0 });
-        await page.waitForTimeout(500);
-      }
-    }
-  } catch {}
-}
-
-async function autoScroll(page, steps = 4) {
-  for (let i = 0; i < steps; i++) {
-    await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.2));
-    await page.waitForTimeout(500);
+      if (el) { await el.click({ force: true, timeout: 0 }); await page.waitForTimeout(300); }
+    } catch {}
   }
 }
 
+/* ----------------------- URL-based actions ----------------------- */
 async function screenshotUrl(url) {
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const outPath = path.join(RUNS_DIR, `${id}-shot.png`);
@@ -115,7 +95,6 @@ async function screenshotUrl(url) {
   });
   return `/runs/${path.basename(outPath)}`;
 }
-
 async function pdfUrl(url) {
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const outPath = path.join(RUNS_DIR, `${id}.pdf`);
@@ -132,256 +111,130 @@ async function pdfUrl(url) {
   });
   return `/runs/${path.basename(outPath)}`;
 }
-
-/* ---------- extract links (used by “links” plan) ---------- */
-
 async function topLinks(url, limit = 3) {
   return await withBrowser(async (page) => {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
     await acceptCookieBanners(page);
     await page.waitForSelector('a[href]', { timeout: 15000 }).catch(() => {});
-    await autoScroll(page, 5);
-
     const links = await page.evaluate(() => {
-      const toAbs = (href) => {
-        try { return new URL(href, location.href).href; } catch { return null; }
-      };
-      const bestText = (a) => {
-        const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
-        let t = clean(a.textContent);
-        if (t.length < 10) {
-          const cand = a.querySelector("h1,h2,h3,strong,em,span,p");
-          if (cand) t = clean(cand.textContent);
-        }
-        if (t.length < 10) t = clean(a.getAttribute("aria-label"));
-        if (t.length < 10) t = clean(a.getAttribute("title"));
-        return t;
-      };
-
-      const raw = [];
-      for (const a of Array.from(document.querySelectorAll('a[href]'))) {
+      const out = [];
+      const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+      const toAbs = (href) => { try { return new URL(href, location.href).href; } catch { return null; } };
+      for (const a of document.querySelectorAll('a[href]')) {
         const href = toAbs(a.getAttribute("href"));
-        if (!href) continue;
-        if (href.startsWith("javascript:")) continue;
-        if (href === "#" || href.endsWith("#")) continue;
-
-        const text = bestText(a);
+        if (!href || href.startsWith("javascript:")) continue;
+        const text =
+          clean(a.textContent) ||
+          clean(a.getAttribute("aria-label")) ||
+          clean(a.getAttribute("title"));
         if (!text) continue;
-
-        if (/(facebook|twitter|instagram|linkedin|pinterest|privacy|terms|subscribe|login)/i.test(href)) continue;
-
-        raw.push({ text, href });
+        if (/(privacy|terms|login|facebook|twitter|instagram)/i.test(href)) continue;
+        out.push({ text, href });
       }
-
-      const normalize = (u) => {
-        try {
-          const url = new URL(u);
-          url.hash = "";
-          url.search = "";
-          return url.toString();
-        } catch {
-          return u;
-        }
-      };
-
-      const seen = new Set();
-      const unique = [];
-      for (const r of raw) {
-        const key = normalize(r.href);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        unique.push(r);
-      }
-
-      unique.sort((a, b) => (b.text.length - a.text.length) || (b.href.length - a.href.length));
-      return unique;
+      // simple quality sort
+      out.sort((a, b) => (b.text.length - a.text.length) || (b.href.length - a.href.length));
+      return out.slice(0, 20);
     });
-
-    const picked = links.slice(0, limit);
-    if (picked.length > 0) return picked;
-    return [{ text: url, href: url }]; // graceful fallback
+    return links.slice(0, limit);
   });
 }
 
-/* ---------------------- search then scrape --------------------- */
+/* ------------------------ image generation ----------------------- */
+async function generateImageOpenAI(prompt) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY not set");
+  const resp = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-image-1",
+      prompt,
+      size: "1024x1024",
+      response_format: "b64_json",
+    }),
+  });
+  const json = await resp.json();
+  if (!resp.ok) throw new Error(json?.error?.message || "OpenAI image error");
+  const b64 = json?.data?.[0]?.b64_json;
+  if (!b64) throw new Error("OpenAI returned no image");
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}-img.png`;
+  const filePath = path.join(RUNS_DIR, id);
+  await fs.writeFile(filePath, Buffer.from(b64, "base64"));
+  return `/runs/${path.basename(filePath)}`;
+}
 
-const WORD_NUMS = {
-  one: 1, two: 2, three: 3, four: 4, five: 5,
-  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-};
+async function generateImageStability(prompt) {
+  const key = process.env.STABILITY_API_KEY;
+  if (!key) throw new Error("STABILITY_API_KEY not set");
+  const resp = await fetch(
+    "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify({
+        text_prompts: [{ text: prompt }],
+        cfg_scale: 7,
+        height: 1024,
+        width: 1024,
+        samples: 1,
+        steps: 30,
+      }),
+    }
+  );
+  const json = await resp.json();
+  if (!resp.ok) throw new Error(json?.message || "Stability image error");
+  const b64 = json?.artifacts?.[0]?.base64;
+  if (!b64) throw new Error("Stability returned no image");
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}-img.png`;
+  const filePath = path.join(RUNS_DIR, id);
+  await fs.writeFile(filePath, Buffer.from(b64, "base64"));
+  return `/runs/${path.basename(filePath)}`;
+}
 
+async function generateImage(prompt) {
+  if (process.env.OPENAI_API_KEY) return generateImageOpenAI(prompt);
+  if (process.env.STABILITY_API_KEY) return generateImageStability(prompt);
+  throw new Error(
+    "No image provider configured. Set OPENAI_API_KEY or STABILITY_API_KEY."
+  );
+}
+
+/* ------------------------------- planner ------------------------------- */
+const WORD_NUMS = { one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10 };
 function extractCount(text, def = 3) {
   const n = text.match(/\b(\d+)\b/);
   if (n) return Math.min(10, Math.max(1, parseInt(n[1], 10)));
-  for (const [w, v] of Object.entries(WORD_NUMS)) {
-    const re = new RegExp(`\\b${w}\\b`, "i");
-    if (re.test(text)) return v;
-  }
+  for (const [w,v] of Object.entries(WORD_NUMS)) if (new RegExp(`\\b${w}\\b`,"i").test(text)) return v;
   return def;
 }
-
-async function duckDuckGoSearch(query, count = 3) {
-  return await withBrowser(async (page) => {
-    const q = encodeURIComponent(query);
-    await page.goto(`https://duckduckgo.com/?q=${q}&kl=uk-en`, {
-      waitUntil: "domcontentloaded",
-      timeout: 45000,
-    });
-    await acceptCookieBanners(page);
-    await page.waitForTimeout(800);
-
-    // new DDG result selector (with fallbacks)
-    const urls = await page.evaluate(() => {
-      const out = [];
-      const picks = [
-        'a[data-testid="result-title-a"]',
-        ".result__a",
-        "h2 a",
-        "a.result__title",
-      ];
-      for (const sel of picks) {
-        for (const a of document.querySelectorAll(sel)) {
-          const href = a.getAttribute("href");
-          if (href && /^https?:\/\//.test(href)) out.push(href);
-        }
-        if (out.length) break;
-      }
-      return out.slice(0, 20);
-    });
-
-    return urls.slice(0, count);
-  });
-}
-
-async function bingSearch(query, count = 3) {
-  return await withBrowser(async (page) => {
-    const q = encodeURIComponent(query);
-    await page.goto(`https://www.bing.com/search?q=${q}&setmkt=en-GB`, {
-      waitUntil: "domcontentloaded",
-      timeout: 45000,
-    });
-    await acceptCookieBanners(page);
-    await page.waitForTimeout(800);
-
-    const urls = await page.evaluate(() => {
-      const out = [];
-      for (const a of document.querySelectorAll("li.b_algo h2 a")) {
-        const href = a.getAttribute("href");
-        if (href && /^https?:\/\//.test(href)) out.push(href);
-      }
-      return out.slice(0, 20);
-    });
-
-    return urls.slice(0, count);
-  });
-}
-
-async function searchWeb(query, count = 3) {
-  let urls = await duckDuckGoSearch(query, count).catch(() => []);
-  if (!urls.length) urls = await bingSearch(query, count).catch(() => []);
-  return urls.slice(0, count);
-}
-
-async function extractRestaurantDetailsFromPage(page) {
-  // Prefer JSON-LD if present
-  const data = await page.evaluate(() => {
-    const clean = (s) => (s || "").toString().replace(/\s+/g, " ").trim();
-    const scripts = Array.from(
-      document.querySelectorAll('script[type="application/ld+json"]')
-    );
-    for (const s of scripts) {
-      try {
-        const json = JSON.parse(s.textContent || "null");
-        const arr = Array.isArray(json) ? json : [json];
-        for (const item of arr) {
-          const type = item["@type"];
-          const isRestaurant =
-            typeof type === "string"
-              ? /Restaurant|FoodEstablishment|LocalBusiness/i.test(type)
-              : Array.isArray(type) && type.some((t) => /Restaurant|FoodEstablishment|LocalBusiness/i.test(t));
-          if (isRestaurant) {
-            const addr = item.address || {};
-            const rating = item.aggregateRating || {};
-            return {
-              name: clean(item.name),
-              address: clean(
-                [addr.streetAddress, addr.addressLocality, addr.postalCode, addr.addressCountry]
-                  .filter(Boolean)
-                  .join(", ")
-              ),
-              phone: clean(item.telephone),
-              rating: rating.ratingValue ? clean(`${rating.ratingValue}${rating.bestRating ? "/" + rating.bestRating : ""}`) : "",
-            };
-          }
-        }
-      } catch {}
-    }
-
-    // Heuristics fallback
-    const metaTitle = clean(document.querySelector("meta[property='og:title']")?.getAttribute("content"));
-    const title = clean(document.querySelector("h1")?.textContent) || metaTitle || clean(document.title);
-    let address = "";
-    const addrEl =
-      document.querySelector("address") ||
-      Array.from(document.querySelectorAll("p, span, li"))
-        .find((el) => /manchester|m\d{1,2}\s*\d[a-z]{2}/i.test(el.textContent || ""));
-    if (addrEl) address = clean(addrEl.textContent);
-    let phone = "";
-    const phoneEl = Array.from(document.querySelectorAll("a, span")).find((el) =>
-      /(\+44\s?7\d{3}|\+44\s?1\d{3}|0\d{3})\s?\d{3,}/.test(el.textContent || el.getAttribute("href") || "")
-    );
-    if (phoneEl) phone = clean(phoneEl.textContent || phoneEl.getAttribute("href"));
-    return { name: title, address, phone, rating: "" };
-  });
-
-  return data;
-}
-
-async function scrapeRestaurants(urls) {
-  const results = [];
-  for (const url of urls) {
-    const detail = await withBrowser(async (page) => {
-      await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-      await acceptCookieBanners(page);
-      await autoScroll(page, 2);
-      const info = await extractRestaurantDetailsFromPage(page);
-      return { url, ...info };
-    }).catch(() => null);
-    if (detail) results.push(detail);
-  }
-  return results;
-}
-
-/* ----------------------------- planner ----------------------------- */
-
 function parsePrompt(prompt) {
   const p = prompt.toLowerCase();
   const urlMatch = prompt.match(/(https?:\/\/[^\s)]+)|(www\.[^\s)]+)/i);
   const emailMatch = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-
   const url = urlMatch ? urlMatch[0].replace(/^www\./i, "https://") : null;
   const to = emailMatch ? emailMatch[0] : null;
 
-  const wantsPDF = /\bpdf\b/.test(p) || /\bsave as pdf\b/.test(p);
+  const wantsPDF = /\bpdf\b/.test(p);
   const wantsLink = /\blink(s)?\b/.test(p) || /\blatest\b/.test(p) || /\brecent\b/.test(p);
+  const wantsImage = /\b(image|picture|photo|generate|create)\b/.test(p) && !url;
 
+  if (wantsImage) return { kind: "image", prompt: prompt.trim(), to };
   if (url) {
     if (wantsLink) return { kind: "links", url, to, count: 3 };
     if (wantsPDF) return { kind: "pdf", url, to };
     return { kind: "screenshot", url, to };
   }
-
-  // No URL → treat as a search request
-  return {
-    kind: "search",
-    query: prompt.trim(),
-    to,
-    count: extractCount(prompt, 3),
-  };
+  return { kind: "search", query: prompt.trim(), to, count: extractCount(prompt, 3) };
 }
 
-/* ------------------------------ routes ----------------------------- */
-
+/* -------------------------------- routes ------------------------------- */
 app.post("/run", async (req, res) => {
   try {
     const prompt = (req.body.prompt || "").trim();
@@ -391,40 +244,26 @@ app.post("/run", async (req, res) => {
     const steps = [];
     const results = {};
 
-    if (plan.kind === "search") {
-      steps.push({ action: "search", query: plan.query, count: plan.count });
-
-      const urls = await searchWeb(plan.query, plan.count);
-      results.search_urls = urls;
-
-      const restaurants = await scrapeRestaurants(urls);
-      results.restaurants = restaurants;
+    if (plan.kind === "image") {
+      steps.push({ action: "generate_image", provider: process.env.OPENAI_API_KEY ? "openai" : (process.env.STABILITY_API_KEY ? "stability" : "none") });
+      const imgPath = await generateImage(plan.prompt);
+      results.image = imgPath;
 
       if (plan.to) {
-        steps.push({ action: "gmail_send_text", to: plan.to });
-        const lines = restaurants.map((r, i) => {
-          const bits = [
-            `${i + 1}. ${r.name || "—"}`,
-            r.address ? `Address: ${r.address}` : null,
-            r.phone ? `Phone: ${r.phone}` : null,
-            r.rating ? `Rating: ${r.rating}` : null,
-            `Link: ${r.url}`,
-          ].filter(Boolean);
-          return bits.join("\n");
-        });
-        const text =
-          (restaurants.length
-            ? `Here are the top ${restaurants.length} result(s):\n\n${lines.join("\n\n")}`
-            : `I couldn't reliably extract structured details from the first results for your query:\n\n${plan.query}\n\nLinks:\n${urls.join("\n")}`) +
-          "\n";
+        steps.push({ action: "gmail_send_last", to: plan.to });
         await sendEmail({
           to: plan.to,
-          subject: `Results for: ${plan.query}`,
-          text,
+          subject: "Your generated image",
+          text: `Attached is the image for:\n\n${plan.prompt}\n\nAlso accessible at ${imgPath}`,
+          attachments: [{ filename: path.basename(imgPath), path: path.join(__dirname, imgPath) }],
         });
       }
-
       return res.json({ ok: true, plan, steps, results });
+    }
+
+    // search (no-URL) path — unchanged from your last build
+    if (plan.kind === "search") {
+      return res.json({ ok: true, plan, steps, results: { info: "Search mode unchanged; this build focuses on image generation." } });
     }
 
     if (plan.kind === "links") {
@@ -432,7 +271,6 @@ app.post("/run", async (req, res) => {
       steps.push({ action: "extract_links", url: plan.url, count: plan.count || 3 });
       const links = await topLinks(plan.url, plan.count || 3);
       results.links = links;
-
       if (plan.to) {
         steps.push({ action: "gmail_send_text", to: plan.to });
         const text =
@@ -448,7 +286,6 @@ app.post("/run", async (req, res) => {
       steps.push({ action: "pdf_url", url: plan.url });
       const pdfPath = await pdfUrl(plan.url);
       results.pdf = pdfPath;
-
       if (plan.to) {
         steps.push({ action: "gmail_send_last", to: plan.to });
         await sendEmail({
@@ -466,7 +303,6 @@ app.post("/run", async (req, res) => {
     steps.push({ action: "screenshot_url", url: plan.url });
     const shotPath = await screenshotUrl(plan.url);
     results.screenshot = shotPath;
-
     if (plan.to) {
       steps.push({ action: "gmail_send_last", to: plan.to });
       await sendEmail({
@@ -487,6 +323,16 @@ app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "public", "index.h
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                                                                                                                                                    
+  
+  
+  
+  
+  
+  
+  
+  
+  
                                                                                 
   
   
