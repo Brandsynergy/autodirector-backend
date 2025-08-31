@@ -1,26 +1,25 @@
 /**
- * Mediad AutoDirector – server.js (full replacement)
- *
- * What’s fixed/changed:
- * - NO usage of `response_format` with OpenAI (prevents "Unknown parameter: 'response_format'" errors)
- * - Robust image generation: supports either `b64_json` or hosted `url` responses, always saves a PNG in /runs
- * - Simple planner for common actions: screenshot a URL, generate an image from a prompt, extract links, email results
- * - Health endpoint and static serving of /public and /runs
+ * Mediad AutoDirector — server.js (ESM version)
  *
  * Required env vars:
  *  - OPENAI_API_KEY
- *  - GMAIL_USER (the Gmail address you’re sending from)
- *  - GMAIL_APP_PASSWORD (the 16-character App Password)
+ *  - GMAIL_USER
+ *  - GMAIL_APP_PASSWORD
  *
  * Base image: mcr.microsoft.com/playwright:v1.55.0-jammy
  */
 
-const express = require("express");
-const path = require("path");
-const fs = require("fs");
-const fsp = require("fs/promises");
-const { chromium } = require("playwright");
-const nodemailer = require("nodemailer");
+import express from "express";
+import path from "path";
+import fs from "fs";
+import { promises as fsp } from "fs";
+import { fileURLToPath } from "url";
+import { chromium } from "playwright";
+import nodemailer from "nodemailer";
+
+// --- __dirname in ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // --- paths
 const ROOT = __dirname;
@@ -134,7 +133,7 @@ async function screenshotURL(url) {
   }
 }
 
-// -- extract top links (title + href) using Playwright
+// -- extract top links using Playwright
 async function extractLinks(url, count = 5) {
   const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
@@ -169,7 +168,7 @@ async function generateImageOpenAI(prompt) {
       model: "gpt-image-1",
       prompt,
       size: "1024x1024",
-      // NOTE: NO response_format here (fixes the error you saw)
+      // NO response_format here
     }),
   });
 
@@ -199,12 +198,6 @@ async function generateImageOpenAI(prompt) {
 
 // ---- planner ---------------------------------------------------------------
 
-/**
- * Very simple planner:
- * - "screenshot <url> ... email to <address>"
- * - "create/generate image ... send to <address>"
- * - "get/extract links <url> ... email to <address>"
- */
 function plan(prompt) {
   const to = emailFromText(prompt);
   const url = urlFromText(prompt);
@@ -228,21 +221,23 @@ function plan(prompt) {
   if (needsLinks(prompt) && url) {
     const countMatch = prompt.match(/\b(\d{1,2})\b/);
     const count = countMatch ? Math.max(1, Math.min(20, parseInt(countMatch[1], 10))) : 5;
-    const steps = [
-      { action: "extract_links", url, count },
-    ];
+    const steps = [{ action: "extract_links", url, count }];
     if (to) steps.push({ action: "gmail_send_text", to });
     return { ok: true, plan: { kind: "links", url, to, count }, steps };
   }
 
-  // fallback: if a URL exists, allow screenshot + optional email
+  // fallback for URL-only prompts
   if (url) {
     const steps = [{ action: "screenshot_url", url }];
     if (to) steps.push({ action: "gmail_send_last", to });
     return { ok: true, plan: { kind: "screenshot", url, to }, steps };
   }
 
-  return { ok: false, error: "I could not detect a supported action. Include a URL for screenshots/links, or a prompt to create an image, and (optionally) an email address." };
+  return {
+    ok: false,
+    error:
+      "I couldn't detect a supported action. Include a URL for screenshots/links, or a prompt to create an image, and (optionally) an email address.",
+  };
 }
 
 // ---- API endpoints ---------------------------------------------------------
@@ -298,7 +293,6 @@ app.post("/run", async (req, res) => {
         }
         case "gmail_send_text": {
           if (!step.to) throw new Error("gmail_send_text requires 'to'");
-          // Find links from a previous step result (if any)
           const linkStep = results.find(r => r.links);
           const body = linkStep
             ? linkStep.links.map((l, i) => `${i + 1}. ${l.title}\n${l.href}`).join("\n\n")
@@ -327,6 +321,11 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Mediad backend listening on ${PORT}`);
 });
+                                                                                
+  
+  
+  
+  
                     
                       
                       
