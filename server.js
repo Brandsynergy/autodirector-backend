@@ -1,4 +1,4 @@
-// server.js (ESM) — complete drop-in
+// server.js (ESM) — complete file
 import express from "express";
 import cors from "cors";
 import nodemailer from "nodemailer";
@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
-import { chromium } from "playwright"; // render image via Playwright
+import { chromium } from "playwright";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,47 +14,46 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// middleware
 app.use(cors());
 app.use(express.json());
 
-// ensure /runs exists
+// serve /public (for the UI and logo)
+app.use(express.static(path.join(__dirname, "public")));
+
+// ensure /runs exists and serve it
 const RUNS_DIR = path.join(__dirname, "runs");
 if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
-
-// serve static images with CORS so email clients can load them
 app.use(
   "/runs",
   express.static(RUNS_DIR, {
-    setHeaders: (res) => res.setHeader("Access-Control-Allow-Origin", "*"),
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith(".png")) res.setHeader("Content-Type", "image/png");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    },
   })
 );
 
 // health
 app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "mediad-autodirector",
-    time: new Date().toISOString(),
-  });
+  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
 });
 
-// Build an absolute URL from a path like "/runs/abc.png"
+// absolute URL helper (fixes “Unknown Error” in emails)
 function absoluteUrl(req, p) {
-  const origin =
-    process.env.PUBLIC_ORIGIN || `${req.protocol}://${req.get("host")}`;
+  const origin = process.env.PUBLIC_ORIGIN || `${req.protocol}://${req.get("host")}`;
   return p.startsWith("http") ? p : `${origin}${p}`;
 }
 
-// take a screenshot to /runs/<stamp>-<rand>.png and return its relative path
+// take screenshot and save to /runs/<stamp>-<rand>.png
 async function takeScreenshot(targetUrl) {
   const stamp = Date.now();
   const rand = crypto.randomBytes(5).toString("hex");
   const rel = `/runs/${stamp}-${rand}.png`;
   const filePath = path.join(__dirname, rel);
 
-  const browser = await chromium.launch({
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(targetUrl, { waitUntil: "networkidle" });
   await page.screenshot({ path: filePath, fullPage: true });
@@ -63,95 +62,66 @@ async function takeScreenshot(targetUrl) {
   return { rel, filePath };
 }
 
-// Gmail transporter (uses your app password)
+// Gmail transporter (uses app password)
 function getTransporter() {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
-
-  if (!user || !pass) {
-    throw new Error(
-      "Missing GMAIL_USER or GMAIL_APP_PASSWORD environment variable"
-    );
-  }
-
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: { user, pass },
-  });
+  if (!user || !pass) throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD");
+  return nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
 }
 
-/**
- * Quick endpoint used by the UI and by your curl test.
- * Body: { url: "https://cnn.com", email: "you@domain.com" (optional) }
- * If email is omitted, it will send to GMAIL_USER.
- */
+// POST /quick  { url: "https://cnn.com", email?: "you@..." }
 app.post("/quick", async (req, res) => {
   try {
     const { url, email } = req.body || {};
-    if (!url || typeof url !== "string") {
-      return res.status(400).json({ ok: false, error: "Missing url" });
-    }
+    if (!url || typeof url !== "string") return res.status(400).json({ ok: false, error: "Missing url" });
 
     const { rel, filePath } = await takeScreenshot(url);
     const full = absoluteUrl(req, rel);
 
-    // send email (inline + link)
+    // email (inline + link). If email omitted, send to GMAIL_USER.
+    const to = email || process.env.GMAIL_USER;
     try {
       const transporter = getTransporter();
-
-      const to = email || process.env.GMAIL_USER;
       await transporter.sendMail({
         from: process.env.GMAIL_USER,
         to,
-        subject: "AutoDirector screenshot",
+        subject: "Mediad AutoDirector screenshot",
         text: `Here is your screenshot: ${full}`,
         html: `
-          <p>Here is your screenshot:</p>
-          <p><a href="${full}">${full}</a></p>
-          <p><img src="cid:snap1" alt="screenshot" style="max-width:100%;height:auto"/></p>
+          <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;">
+            <p>Here is your screenshot:</p>
+            <p><a href="${full}">${full}</a></p>
+            <p><img src="cid:snap1" alt="screenshot" style="max-width:100%;height:auto"/></p>
+          </div>
         `,
         attachments: [
-          {
-            filename: path.basename(rel),
-            path: filePath,     // attach the file
-            cid: "snap1"        // inline content-id
-          },
+          { filename: path.basename(rel), path: filePath, cid: "snap1" } // inline + attachment
         ],
       });
     } catch (mailErr) {
-      // We still return ok with the link so you can copy it,
-      // but include the mail error for visibility.
-      return res.json({
-        ok: true,
-        link: rel,
-        url: full,
-        email: email || process.env.GMAIL_USER,
-        mailError: mailErr.message,
-      });
+      // still return link so you can open it
+      return res.json({ ok: true, link: rel, url: full, email: to, mailError: mailErr.message });
     }
 
-    res.json({
-      ok: true,
-      link: rel,       // relative path (kept for backward compatibility)
-      url: full,       // absolute URL (this fixes "Unknown Error")
-      email: email || process.env.GMAIL_USER,
-    });
+    res.json({ ok: true, link: rel, url: full, email: to });
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err.message || "Server error" });
   }
 });
 
-// simple homepage so hitting the root doesn't show "Cannot GET /"
+// UI at "/"
 app.get("/", (_req, res) => {
-  res.type("text").send(
-    `Mediad AutoDirector\n\nEndpoints:\nGET  /health\nPOST /quick {url, email?}\nStatic: /runs/<file>`
-  );
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Mediad backend listening on ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                                                
+  
+  
+  
+  
                                                                                                                         
   
   
