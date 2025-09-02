@@ -1,110 +1,158 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Mediad AutoDirector</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0b1020; --card:#121830; --muted:#8aa0b6; --text:#e8eef6; --accent:#4ea1ff; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
-           background:linear-gradient(180deg,#0a0f1f,#0e1426); color:var(--text); }
-    .wrap { max-width: 860px; margin: 40px auto; padding: 0 16px; }
-    .card { background:var(--card); border:1px solid #1f2742; border-radius:16px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.25); }
-    header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
-    header img { width:36px; height:36px; object-fit:contain; display:block; }
-    h1 { font-size:22px; margin:0; letter-spacing:0.2px; }
-    p.sub { margin:6px 0 0 0; color:var(--muted); font-size:14px; }
-    label { display:block; font-size:13px; color:#b8c6d6; margin-top:14px; margin-bottom:6px; }
-    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid #243054; background:#0c1327; color:var(--text); }
-    input::placeholder { color:#6f83a0; }
-    .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-    button { margin-top:16px; width:100%; padding:12px 16px; border:0; border-radius:10px; background:var(--accent);
-             color:#00162b; font-weight:700; cursor:pointer; }
-    button:disabled { opacity:.6; cursor:not-allowed; }
-    .muted { color:var(--muted); font-size:13px; }
-    .out { margin-top:18px; background:#0c1327; border:1px dashed #2a355a; border-radius:12px; padding:14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; color:#bcd1e9; overflow:auto; max-height:240px; }
-    .shot { margin-top:16px; border-radius:12px; border:1px solid #223056; max-width:100%; display:none; }
+    :root { color-scheme: dark; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif; background:#0b0f13; color:#e6ebf0; }
+    .wrap { max-width: 1100px; margin: 32px auto; padding: 0 16px; }
+    h1 { font-size: 34px; margin: 0 0 8px; }
+    .muted { color:#9aa7b2; font-size:14px; margin-bottom:24px; }
+    .card { background:#121820; border:1px solid #1a2330; border-radius:14px; padding:18px; margin-bottom:18px; }
+    label { display:block; font-size:14px; color:#9aa7b2; margin-bottom:8px; }
+    input, textarea { width:100%; background:#0f141b; color:#e6ebf0; border:1px solid #1a2330; border-radius:10px; padding:14px; font-size:16px; }
+    textarea { min-height:100px; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+    .btn { display:inline-block; background:#5ba3ff; color:#00132b; border:0; padding:14px 18px; border-radius:12px; font-weight:700; cursor:pointer; width:100%; text-align:center; }
+    .cols { display:grid; grid-template-columns: 1fr 1fr; gap:18px; }
+    pre { background:#0f141b; border:1px solid #1a2330; padding:12px; border-radius:10px; overflow:auto; font-size:13px; }
+    .chips { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+    .chip { border:1px dashed #223047; color:#b8c4cf; padding:8px 10px; border-radius:999px; font-size:12px; cursor:pointer; }
+    .ok { color:#5fff90; }
+    .err { color:#ff6b6b; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <header>
-        <!-- Put /public/logo.png in your repo; this hides the image if it’s missing -->
-        <img src="/logo.png" alt="Mediad" onerror="this.style.display='none'">
-        <div>
-          <h1>Mediad AutoDirector</h1>
-          <p class="sub">Capture a web page and email the screenshot.</p>
-        </div>
-      </header>
+    <h1>Mediad AutoDirector</h1>
+    <div class="muted">Natural-language ➜ actions (plus a simple one-click screenshot sender).</div>
 
+    <!-- NATURAL LANGUAGE -->
+    <div class="card">
+      <label>Describe what to automate</label>
+      <textarea id="prompt" placeholder='E.g. "Screenshot https://cnn.com and email it to you@example.com"'></textarea>
+      <div class="chips">
+        <span class="chip" data-eg='Screenshot https://cnn.com and email it to support@mivado.co'>Screenshot https://cnn.com and email it…</span>
+        <span class="chip" data-eg='Get the latest links from https://inc.com and email to support@mivado.co'>Get latest links from inc.com…</span>
+        <span class="chip" data-eg='Create image of an ultrarealistic elephant with wings and send to support@mivado.co'>Create an image and send it…</span>
+      </div>
+      <div style="margin-top:12px" class="row">
+        <button id="btnPlan" class="btn">Plan</button>
+        <button id="btnRun" class="btn">Run</button>
+      </div>
+
+      <div class="cols" style="margin-top:16px">
+        <div>
+          <h3>Planned Flow</h3>
+          <pre id="planBox">{ }</pre>
+        </div>
+        <div>
+          <h3>Run Console</h3>
+          <pre id="runBox">{ }</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- SIMPLE SCREENSHOT SENDER -->
+    <div class="card">
+      <h3>Capture a web page and email the screenshot.</h3>
       <div class="row">
         <div>
           <label>Website URL</label>
-          <input id="url" placeholder="https://www.cnn.com" />
+          <input id="ssUrl" placeholder="https://www.cnn.com" value="https://www.cnn.com"/>
         </div>
         <div>
           <label>Destination email</label>
-          <input id="email" placeholder="you@example.com (optional)" />
+          <input id="ssTo" placeholder="you@example.com (optional)"/>
         </div>
       </div>
-
-      <button id="go">Capture & Email</button>
-      <p class="muted">Tip: if you leave the email blank, the server will use <code>GMAIL_USER</code>.</p>
-
-      <div id="out" class="out"></div>
-      <img id="shot" class="shot" alt="Screenshot result"/>
+      <div style="margin-top:12px">
+        <button id="btnCapture" class="btn">Capture &amp; Email</button>
+      </div>
+      <div style="margin-top:12px">
+        <div id="simpleStatus" class="muted"></div>
+      </div>
     </div>
   </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const out = $("out");
-    const btn = $("go");
-    const img = $("shot");
 
-    function log(obj) {
-      out.textContent = JSON.stringify(obj, null, 2);
-    }
+    // Sample chips
+    document.querySelectorAll(".chip").forEach(ch => {
+      ch.addEventListener("click", () => { $("prompt").value = ch.dataset.eg; });
+    });
 
-    btn.onclick = async () => {
-      const url = $("url").value.trim();
-      const email = $("email").value.trim();
-      img.style.display = "none";
-      out.textContent = "";
-      if (!url) { log({ ok:false, error:"Please enter a URL." }); return; }
+    $("btnPlan").onclick = async () => {
+      const prompt = $("prompt").value.trim();
+      $("planBox").textContent = "planning…";
+      const r = await fetch("/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt })
+      });
+      const j = await r.json();
+      $("planBox").textContent = JSON.stringify(j, null, 2);
+    };
 
-      btn.disabled = true; btn.textContent = "Working...";
-
+    $("btnRun").onclick = async () => {
+      const plan = $("planBox").textContent;
+      let steps = null;
       try {
-        // Build steps directly
-        const steps = [{ action: "screenshot_url", url }];
-        if (email) steps.push({ action: "gmail_send_last", to: email });
-        else steps.push({ action: "gmail_send_last" });
+        const parsed = JSON.parse(plan);
+        steps = parsed.steps;
+      } catch {}
+      if (!steps) {
+        // call /plan first
+        await $("btnPlan").onclick();
+        const parsed = JSON.parse($("planBox").textContent || "{}");
+        steps = parsed.steps;
+      }
+      if (!steps) {
+        $("runBox").textContent = JSON.stringify({ ok:false, error:"No steps" }, null, 2);
+        return;
+      }
+      $("runBox").textContent = "running…";
+      const r = await fetch("/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ steps })
+      });
+      const j = await r.json();
+      $("runBox").textContent = JSON.stringify(j, null, 2);
+    };
 
-        const resp = await fetch("/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ steps })
-        });
-        const data = await resp.json();
-        log(data);
-
-        const shot = data?.results?.find(r => r.action === "screenshot_url")?.path;
-        if (shot) {
-          img.src = shot;
-          img.style.display = "block";
-        }
-      } catch (e) {
-        log({ ok:false, error: String(e) });
-      } finally {
-        btn.disabled = false; btn.textContent = "Capture & Email";
+    $("btnCapture").onclick = async () => {
+      $("simpleStatus").textContent = "running…";
+      const url = $("ssUrl").value.trim();
+      const to = $("ssTo").value.trim();
+      // run directly
+      const steps = [
+        { action: "screenshot_url", url },
+        { action: "gmail_send_last", to }
+      ];
+      const r = await fetch("/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ steps })
+      });
+      const j = await r.json();
+      if (j.ok) {
+        const shot = j.results.find(x => x.action === "screenshot_url");
+        const path = shot?.path ? location.origin + shot.path : "(none)";
+        $("simpleStatus").innerHTML = `<span class="ok">Done</span>: <a href="${path}" target="_blank">${path}</a>`;
+      } else {
+        $("simpleStatus").innerHTML = `<span class="err">${j.error || "Unknown error"}</span>`;
       }
     };
   </script>
 </body>
 </html>
+                                        
+  
+  
                     
                       
                       
