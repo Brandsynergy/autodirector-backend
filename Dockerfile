@@ -1,23 +1,25 @@
-# Use the Playwright base so Chromium is present
+# Playwright runtime with matching version to our dependency
 FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 
 WORKDIR /app
 
-# cache-bust knob (change value to force rebuild)
-ARG CACHE_BUST=2025-08-31
-RUN echo "cache-bust=${CACHE_BUST}"
-
+# Install production deps
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev || npm install --omit=dev
 
-COPY public ./public
+# App files
 COPY server.js ./server.js
 
-RUN mkdir -p runs
+# Screenshot output dir
+RUN mkdir -p /app/runs
 
-ENV NODE_ENV=production
+ENV PORT=10000
 EXPOSE 10000
-CMD ["node","server.js"]
+
+CMD ["node", "server.js"]
+                                        
+  
+  
                                         
   
   
