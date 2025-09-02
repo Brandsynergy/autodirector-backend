@@ -1,155 +1,112 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Mediad AutoDirector</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif; background:#0b0f13; color:#e6ebf0; }
-    .wrap { max-width: 1100px; margin: 32px auto; padding: 0 16px; }
-    h1 { font-size: 34px; margin: 0 0 8px; }
-    .muted { color:#9aa7b2; font-size:14px; margin-bottom:24px; }
-    .card { background:#121820; border:1px solid #1a2330; border-radius:14px; padding:18px; margin-bottom:18px; }
-    label { display:block; font-size:14px; color:#9aa7b2; margin-bottom:8px; }
-    input, textarea { width:100%; background:#0f141b; color:#e6ebf0; border:1px solid #1a2330; border-radius:10px; padding:14px; font-size:16px; }
-    textarea { min-height:100px; }
-    .row { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
-    .btn { display:inline-block; background:#5ba3ff; color:#00132b; border:0; padding:14px 18px; border-radius:12px; font-weight:700; cursor:pointer; width:100%; text-align:center; }
-    .cols { display:grid; grid-template-columns: 1fr 1fr; gap:18px; }
-    pre { background:#0f141b; border:1px solid #1a2330; padding:12px; border-radius:10px; overflow:auto; font-size:13px; }
-    .chips { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
-    .chip { border:1px dashed #223047; color:#b8c4cf; padding:8px 10px; border-radius:999px; font-size:12px; cursor:pointer; }
-    .ok { color:#5fff90; }
-    .err { color:#ff6b6b; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mediad AutoDirector</title>
+<style>
+  :root { --bg:#0b0f1a; --panel:#0f1629; --text:#e8eefc; --muted:#9fb3d9; --cta:#5ea3ff; --ctaText:#001130; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--text); }
+  .wrap { max-width:1100px; margin:40px auto; padding:0 16px; }
+  h1 { font-size:34px; margin:0 0 6px; }
+  .sub { color:var(--muted); margin-bottom:22px; }
+  .panel { background:var(--panel); border-radius:14px; padding:18px; margin:18px 0; }
+  textarea,input { width:100%; box-sizing:border-box; padding:14px; border-radius:12px; border:none; background:#10162a; color:var(--text); font-size:16px; }
+  button { padding:14px 18px; border-radius:12px; border:none; background:var(--cta); color:var(--ctaText); font-weight:700; cursor:pointer; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  pre { background:#0a1223; padding:14px; border-radius:12px; overflow:auto; }
+  .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Mediad AutoDirector</h1>
-    <div class="muted">Natural-language ➜ actions (plus a simple one-click screenshot sender).</div>
+<div class="wrap">
+  <h1>Mediad AutoDirector</h1>
+  <div class="sub">Natural-language → plan → execute. Screenshots, link extraction and email sending.</div>
 
-    <!-- NATURAL LANGUAGE -->
-    <div class="card">
-      <label>Describe what to automate</label>
-      <textarea id="prompt" placeholder='E.g. "Screenshot https://cnn.com and email it to you@example.com"'></textarea>
-      <div class="chips">
-        <span class="chip" data-eg='Screenshot https://cnn.com and email it to support@mivado.co'>Screenshot https://cnn.com and email it…</span>
-        <span class="chip" data-eg='Get the latest links from https://inc.com and email to support@mivado.co'>Get latest links from inc.com…</span>
-        <span class="chip" data-eg='Create image of an ultrarealistic elephant with wings and send to support@mivado.co'>Create an image and send it…</span>
-      </div>
-      <div style="margin-top:12px" class="row">
-        <button id="btnPlan" class="btn">Plan</button>
-        <button id="btnRun" class="btn">Run</button>
-      </div>
-
-      <div class="cols" style="margin-top:16px">
-        <div>
-          <h3>Planned Flow</h3>
-          <pre id="planBox">{ }</pre>
-        </div>
-        <div>
-          <h3>Run Console</h3>
-          <pre id="runBox">{ }</pre>
-        </div>
-      </div>
+  <div class="panel">
+    <label>Describe what to automate</label>
+    <textarea id="prompt" rows="3" placeholder="Screenshot https://cnn.com and email it to you@example.com"></textarea>
+    <div style="display:flex; gap:10px; margin-top:12px;">
+      <button id="btnPlan">Plan</button>
+      <button id="btnRun">Run</button>
     </div>
+    <div class="hint">Examples: “Screenshot https://cnn.com and email it to you@example.com”. “Get 3 latest links from https://inc.com and email to me@example.com”.</div>
+  </div>
 
-    <!-- SIMPLE SCREENSHOT SENDER -->
-    <div class="card">
-      <h3>Capture a web page and email the screenshot.</h3>
-      <div class="row">
-        <div>
-          <label>Website URL</label>
-          <input id="ssUrl" placeholder="https://www.cnn.com" value="https://www.cnn.com"/>
-        </div>
-        <div>
-          <label>Destination email</label>
-          <input id="ssTo" placeholder="you@example.com (optional)"/>
-        </div>
-      </div>
-      <div style="margin-top:12px">
-        <button id="btnCapture" class="btn">Capture &amp; Email</button>
-      </div>
-      <div style="margin-top:12px">
-        <div id="simpleStatus" class="muted"></div>
-      </div>
+  <div class="row">
+    <div class="panel">
+      <h3>Planned Flow</h3>
+      <pre id="planned">—</pre>
+    </div>
+    <div class="panel">
+      <h3>Run Console</h3>
+      <pre id="console">—</pre>
     </div>
   </div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
+  <div class="panel">
+    <h3>Quick tool: Capture a page and email the screenshot</h3>
+    <div class="row">
+      <div><input id="capUrl" placeholder="https://www.cnn.com" value="https://www.cnn.com" /></div>
+      <div><input id="capEmail" placeholder="you@example.com (optional)" /></div>
+    </div>
+    <div style="margin-top:12px;"><button id="btnCap">Capture & Email</button></div>
+    <div class="hint" id="capOut"></div>
+  </div>
+</div>
 
-    // Sample chips
-    document.querySelectorAll(".chip").forEach(ch => {
-      ch.addEventListener("click", () => { $("prompt").value = ch.dataset.eg; });
-    });
+<script>
+const planned = document.getElementById('planned');
+const consoleOut = document.getElementById('console');
 
-    $("btnPlan").onclick = async () => {
-      const prompt = $("prompt").value.trim();
-      $("planBox").textContent = "planning…";
-      const r = await fetch("/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt })
-      });
-      const j = await r.json();
-      $("planBox").textContent = JSON.stringify(j, null, 2);
-    };
+async function plan() {
+  planned.textContent = 'Planning…';
+  const prompt = document.getElementById('prompt').value.trim();
+  const r = await fetch('/plan', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ prompt })
+  });
+  const j = await r.json();
+  planned.textContent = JSON.stringify(j, null, 2);
+  return j;
+}
 
-    $("btnRun").onclick = async () => {
-      const plan = $("planBox").textContent;
-      let steps = null;
-      try {
-        const parsed = JSON.parse(plan);
-        steps = parsed.steps;
-      } catch {}
-      if (!steps) {
-        // call /plan first
-        await $("btnPlan").onclick();
-        const parsed = JSON.parse($("planBox").textContent || "{}");
-        steps = parsed.steps;
-      }
-      if (!steps) {
-        $("runBox").textContent = JSON.stringify({ ok:false, error:"No steps" }, null, 2);
-        return;
-      }
-      $("runBox").textContent = "running…";
-      const r = await fetch("/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ steps })
-      });
-      const j = await r.json();
-      $("runBox").textContent = JSON.stringify(j, null, 2);
-    };
+async function run(steps) {
+  consoleOut.textContent = 'Running…';
+  const r = await fetch('/run', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ steps })
+  });
+  const j = await r.json();
+  consoleOut.textContent = JSON.stringify(j, null, 2);
+  return j;
+}
 
-    $("btnCapture").onclick = async () => {
-      $("simpleStatus").textContent = "running…";
-      const url = $("ssUrl").value.trim();
-      const to = $("ssTo").value.trim();
-      // run directly
-      const steps = [
-        { action: "screenshot_url", url },
-        { action: "gmail_send_last", to }
-      ];
-      const r = await fetch("/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ steps })
-      });
-      const j = await r.json();
-      if (j.ok) {
-        const shot = j.results.find(x => x.action === "screenshot_url");
-        const path = shot?.path ? location.origin + shot.path : "(none)";
-        $("simpleStatus").innerHTML = `<span class="ok">Done</span>: <a href="${path}" target="_blank">${path}</a>`;
-      } else {
-        $("simpleStatus").innerHTML = `<span class="err">${j.error || "Unknown error"}</span>`;
-      }
-    };
-  </script>
+document.getElementById('btnPlan').onclick = () => plan();
+document.getElementById('btnRun').onclick = async () => {
+  const p = await plan();
+  if (p.ok && Array.isArray(p.steps)) await run(p.steps);
+};
+
+document.getElementById('btnCap').onclick = async () => {
+  const url = document.getElementById('capUrl').value.trim();
+  const email = document.getElementById('capEmail').value.trim();
+  const r = await fetch('/api/capture', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ url, email: email || undefined })
+  });
+  const j = await r.json();
+  const link = j?.link ? (location.origin + j.link) : '';
+  document.getElementById('capOut').textContent = j.ok ? `Done: ${link}` : `Error: ${j.error || 'unknown'}`;
+};
+</script>
 </body>
 </html>
+                                                                                
+  
+  
+  
+  
                                         
   
   
