@@ -130,6 +130,12 @@ app.use((req, res) => res.status(404).json({ ok: false, error: "Not Found" }));
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                                                                    
+  
+  
+  
+  
+  
                                                                                 
   
   
