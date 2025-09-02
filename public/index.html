@@ -8,40 +8,66 @@
     :root { --fg:#0f172a; --muted:#475569; --brand:#0ea5e9; --bg:#f8fafc; --card:#ffffff; --ok:#10b981; --err:#ef4444; }
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
-    .wrap{max-width:780px;margin:40px auto;padding:0 16px}
-    .card{background:var(--card);border-radius:16px;box-shadow:0 10px 30px rgba(2,6,23,.06);padding:24px}
-    header{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+    .wrap{max-width:880px;margin:40px auto;padding:0 16px}
+    .card{background:var(--card);border-radius:16px;box-shadow:0 10px 30px rgba(2,6,23,.06);padding:24px;margin-bottom:22px}
+    header{display:flex;align-items:center;gap:14px;margin-bottom:6px}
     header img{width:40px;height:40px;object-fit:contain}
     h1{font-size:20px;margin:0}
     p.muted{color:var(--muted);margin:6px 0 0}
     label{display:block;font-weight:600;margin-top:14px}
-    input{width:100%;padding:12px 14px;margin-top:6px;border:1px solid #e5e7eb;border-radius:12px;outline:none}
-    input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(14,165,233,.15)}
+    input, textarea{width:100%;padding:12px 14px;margin-top:6px;border:1px solid #e5e7eb;border-radius:12px;outline:none;background:#fff}
+    textarea{min-height:84px;resize:vertical}
+    input:focus, textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(14,165,233,.15)}
     .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
     .row > * {flex:1}
     button{padding:12px 16px;border:0;border-radius:12px;background:var(--brand);color:#fff;font-weight:600;cursor:pointer}
     button:disabled{opacity:.6;cursor:not-allowed}
     .hint{font-size:13px;color:var(--muted);margin-top:6px}
-    .result{margin-top:20px;padding:14px;border-radius:12px;background:#f1f5f9}
+    .result{margin-top:14px;padding:14px;border-radius:12px;background:#f1f5f9;white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
     .ok{color:var(--ok);font-weight:700}
     .err{color:var(--err);font-weight:700}
     .thumb{margin-top:12px;border:1px solid #e5e7eb;border-radius:12px;max-width:100%}
     .actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
     a.button{display:inline-block;padding:10px 12px;border-radius:10px;background:#111827;color:#fff;text-decoration:none}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    @media (max-width: 860px){ .two{grid-template-columns:1fr} }
   </style>
 </head>
 <body>
   <div class="wrap">
+
+    <!-- Natural-language automation -->
     <div class="card">
       <header>
-        <!-- Place your logo at public/logo.png to show it -->
         <img src="/logo.png" alt="Mediad logo" onerror="this.style.display='none'">
         <div>
           <h1>Mediad AutoDirector</h1>
-          <p class="muted">Capture a live webpage screenshot and email it automatically.</p>
+          <p class="muted">Natural-language planning → steps → execution.</p>
         </div>
       </header>
 
+      <label for="prompt">Describe what to automate</label>
+      <textarea id="prompt" placeholder="Example: Screenshot https://cnn.com and email it to you@example.com"></textarea>
+
+      <div class="row">
+        <button id="btnPlan">Plan</button>
+        <button id="btnRun">Run</button>
+      </div>
+
+      <div class="two">
+        <div>
+          <h3>Planned Flow</h3>
+          <div id="planOut" class="result">—</div>
+        </div>
+        <div>
+          <h3>Run Console</h3>
+          <div id="runOut" class="result">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick tool -->
+    <div class="card">
       <label for="url">Website URL</label>
       <input id="url" type="url" placeholder="https://cnn.com" required>
 
@@ -52,7 +78,7 @@
         <button id="go">Capture & Email</button>
         <button id="preview">Capture Only (no email)</button>
       </div>
-      <div class="hint">Tip: You can paste any public URL (news, dashboards, forms). We’ll capture a full-page PNG.</div>
+      <div class="hint">Tip: Paste any public URL (news, dashboards, forms). We capture a full-page PNG.</div>
 
       <div id="out" class="result" style="display:none"></div>
       <img id="thumb" class="thumb" style="display:none" alt="Screenshot preview"/>
@@ -61,6 +87,7 @@
   </div>
 
   <script>
+    // ---------- Quick ----------
     const goBtn = document.getElementById('go');
     const pvBtn = document.getElementById('preview');
     const out   = document.getElementById('out');
@@ -74,7 +101,7 @@
 
       goBtn.disabled = pvBtn.disabled = true;
       out.style.display = 'block';
-      out.innerHTML = 'Working… please wait (10–20s for complex pages)…';
+      out.textContent = 'Working… please wait (10–20s for complex pages)…';
       links.style.display = 'none';
       img.style.display = 'none';
 
@@ -86,14 +113,13 @@
           body: JSON.stringify(body)
         });
         const data = await r.json();
-
         if(!data.ok) throw new Error(data.error || 'Unknown error');
 
         const full = data.url || (location.origin + (data.link || ''));
         out.innerHTML = '<span class="ok">Success.</span> ' + (sendEmail
           ? `We emailed the screenshot to <b>${data.email}</b>.`
           : `Screenshot captured (not emailed).`)
-          + `<br>Link: <a href="${full}" target="_blank" rel="noopener">${full}</a>`;
+          + `\nLink: ${full}`;
 
         img.src = full; img.style.display = 'block';
         links.innerHTML = `
@@ -101,22 +127,60 @@
           <a class="button" href="${full}" download>Download PNG</a>
         `;
         links.style.display = 'flex';
-
-        if(data.mailError){
-          out.innerHTML += `<br><span class="err">Email note:</span> ${data.mailError}`;
-        }
-      } catch(e){
-        out.innerHTML = '<span class="err">Failed:</span> ' + e.message;
-      } finally {
-        goBtn.disabled = pvBtn.disabled = false;
-      }
+        if(data.mailError){ out.innerHTML += `\nEmail note: ${data.mailError}`; }
+      } catch(e){ out.innerHTML = 'Failed: ' + e.message; }
+      finally { goBtn.disabled = pvBtn.disabled = false; }
     }
-
     goBtn.addEventListener('click', ()=>callQuick(true));
     pvBtn.addEventListener('click', ()=>callQuick(false));
+
+    // ---------- Plan / Run ----------
+    const btnPlan = document.getElementById('btnPlan');
+    const btnRun  = document.getElementById('btnRun');
+    const planOut = document.getElementById('planOut');
+    const runOut  = document.getElementById('runOut');
+
+    let lastPlanSteps = [];
+
+    btnPlan.addEventListener('click', async () => {
+      const prompt = document.getElementById('prompt').value.trim();
+      planOut.textContent = 'Planning…';
+      runOut.textContent = '—';
+      try {
+        const r = await fetch('/plan', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ prompt })
+        });
+        const data = await r.json();
+        lastPlanSteps = data.steps || [];
+        planOut.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        planOut.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    btnRun.addEventListener('click', async () => {
+      runOut.textContent = 'Running…';
+      try {
+        const r = await fetch('/run', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ steps: lastPlanSteps })
+        });
+        const data = await r.json();
+        runOut.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        runOut.textContent = 'Error: ' + e.message;
+      }
+    });
   </script>
 </body>
 </html>
+                                                            
+  
+  
+  
                                                             
   
   
