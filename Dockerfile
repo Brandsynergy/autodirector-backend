@@ -1,21 +1,26 @@
-# Prebuilt Playwright image (browsers preinstalled)
+# Use the Playwright base so Chromium is present
 FROM mcr.microsoft.com/playwright:v1.55.0-jammy
 
 WORKDIR /app
 
-# tiny cache-bust so Render doesn’t reuse stale layers
-ARG CACHEBUST=2025-08-28
-ENV CACHEBUST=${CACHEBUST}
+# cache-bust knob (change value to force rebuild)
+ARG CACHE_BUST=2025-08-31
+RUN echo "cache-bust=${CACHE_BUST}"
 
-COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev
 
-COPY server.js ./server.js
 COPY public ./public
-RUN mkdir -p /app/runs
+COPY server.js ./server.js
 
+RUN mkdir -p runs
+
+ENV NODE_ENV=production
 EXPOSE 10000
-CMD ["node", "server.js"]
+CMD ["node","server.js"]
+                                        
+  
+  
                                                             
   
   
