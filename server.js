@@ -1,4 +1,4 @@
-// server.js  (ESM)
+// server.js  (ESM, V2)
 import express from "express";
 import cors from "cors";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import nodemailer from "nodemailer";
 import { chromium } from "playwright";
 
+const VERSION = "v2-normalize";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
@@ -16,33 +17,23 @@ app.use(express.json({ limit: "1mb" }));
 const RUNS_DIR = path.join(__dirname, "runs");
 await fs.mkdir(RUNS_DIR, { recursive: true });
 
-// Serve screenshots
 app.use(
   "/runs",
-  express.static(RUNS_DIR, {
-    maxAge: 0,
-    setHeaders(res) {
-      res.set("Access-Control-Allow-Origin", "*");
-    },
-  })
+  express.static(RUNS_DIR, { maxAge: 0, setHeaders: res => res.set("Access-Control-Allow-Origin", "*") })
 );
 
 const PORT = process.env.PORT || 10000;
 
-/* ----------------------- UTILITIES ----------------------- */
-
-// Fix common URL mistakes and validate
+/* -------- URL NORMALIZER -------- */
 function normalizeUrl(input) {
   if (!input) return null;
   let u = String(input).trim();
 
-  // common paste typos like "https;//" or "http;//"
+  // fix common typos
   u = u.replace(/^https;\/*/i, "https://").replace(/^http;\/*/i, "http://");
 
   // add scheme if missing
-  if (!/^https?:\/\//i.test(u)) {
-    u = "https://" + u.replace(/^\/+/, "");
-  }
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
 
   try {
     const urlObj = new URL(u);
@@ -53,32 +44,7 @@ function normalizeUrl(input) {
   }
 }
 
-async function takeScreenshot(url) {
-  const fixed = normalizeUrl(url);
-  if (!fixed) throw new Error(`Invalid URL: ${url}`);
-
-  const id = Date.now() + "-" + Math.random().toString(36).slice(2, 12);
-  const filePath = path.join(RUNS_DIR, `${id}.png`);
-
-  const browser = await chromium.launch({
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  const page = await context.newPage();
-
-  try {
-    await page.goto(fixed, { waitUntil: "load", timeout: 45_000 });
-    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-    await page.screenshot({ path: filePath, fullPage: true });
-  } finally {
-    await context.close();
-    await browser.close();
-  }
-
-  const link = `/runs/${path.basename(filePath)}`;
-  return { path: filePath, link, url: fixed };
-}
-
+/* -------- EMAIL -------- */
 function smtp() {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
@@ -91,55 +57,52 @@ async function sendEmail({ to, subject, text, html, attachments }) {
   await smtp().sendMail({ from, to, subject, text, html, attachments });
 }
 
-/* ----------------------- ENDPOINTS ----------------------- */
+/* -------- SCREENSHOT -------- */
+async function takeScreenshot(rawUrl) {
+  const url = normalizeUrl(rawUrl);
+  if (!url) throw new Error(`Invalid URL: ${rawUrl}`);
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
-});
+  const id = Date.now() + "-" + Math.random().toString(36).slice(2, 12);
+  const filePath = path.join(RUNS_DIR, `${id}.png`);
 
-// QUICK: { url, email? }
-app.post("/quick", async (req, res) => {
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await ctx.newPage();
+
   try {
-    const { url, email } = req.body || {};
-    const shot = await takeScreenshot(url);
-    const absolute = new URL(shot.link, `${req.protocol}://${req.get("host")}`).toString();
-
-    if (email) {
-      await sendEmail({
-        to: email,
-        subject: `Screenshot of ${shot.url}`,
-        text: `Here is your screenshot: ${absolute}`,
-        html: `<p>Here is your screenshot:</p><p><a href="${absolute}">${absolute}</a></p>`,
-        attachments: [{ filename: path.basename(shot.path), path: shot.path }],
-      });
-    }
-    res.json({ ok: true, link: shot.link, url: absolute, email: email || null });
-  } catch (err) {
-    res.status(400).json({ ok: false, error: String(err.message || err) });
+    await page.goto(url, { waitUntil: "load", timeout: 45_000 });
+    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+    await page.screenshot({ path: filePath, fullPage: true });
+  } finally {
+    await ctx.close();
+    await browser.close();
   }
+
+  return { path: filePath, link: `/runs/${path.basename(filePath)}`, url };
+}
+
+/* -------- ENDPOINTS -------- */
+app.get("/health", (_req, res) => {
+  res.json({ ok: true, service: "mediad-autodirector", version: VERSION, time: new Date().toISOString() });
 });
 
-// Make a simple plan from natural language
+// Simple planner (extract url/email even when the url has https;//)
 function planFromPrompt(prompt) {
-  const txt = String(prompt || "").trim();
-  if (!txt) throw new Error("prompt is required");
-
-  const urlMatch = txt.match(
-    /https?:\/\/\S+|www\.\S+|[a-z0-9.-]+\.[a-z]{2,}(?:\/\S*)?/i
-  );
+  const txt = String(prompt || "");
   const emailMatch = txt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const urlMatch = txt.match(/https[;:]\/\/\S+|http[;:]\/\/\S+|www\.\S+|[a-z0-9.-]+\.[a-z]{2,}(?:\/\S*)?/i);
 
-  const url = urlMatch ? urlMatch[0] : null;
+  const rawUrl = urlMatch ? urlMatch[0] : null;
+  const url = rawUrl ? normalizeUrl(rawUrl) : null;
   const to = emailMatch ? emailMatch[0] : null;
 
   const steps = [];
-  if (url) steps.push({ action: "screenshot_url", url });
+  if (url) steps.push({ action: "screenshot_url", url: rawUrl }); // raw allowed; we normalize on run
   if (to) steps.push({ action: "gmail_send_last", to });
 
-  return { kind: url ? "screenshot" : "unknown", url, to, steps };
+  return { kind: url ? "screenshot" : "general", url, to, steps };
 }
 
-// PLAN: { prompt }
 app.post("/plan", (req, res) => {
   try {
     const { prompt } = req.body || {};
@@ -150,7 +113,6 @@ app.post("/plan", (req, res) => {
   }
 });
 
-// RUN: { steps: [...] }
 app.post("/run", async (req, res) => {
   const steps = (req.body && req.body.steps) || [];
   const results = [];
@@ -182,16 +144,39 @@ app.post("/run", async (req, res) => {
   }
 });
 
-// Simple UI
+app.post("/quick", async (req, res) => {
+  try {
+    const { url: rawUrl, email } = req.body || {};
+    const shot = await takeScreenshot(rawUrl);
+    const absolute = new URL(shot.link, `${req.protocol}://${req.get("host")}`).toString();
+
+    if (email) {
+      await sendEmail({
+        to: email,
+        subject: `Screenshot of ${shot.url}`,
+        text: `Here is your screenshot: ${absolute}`,
+        html: `<p>Here is your screenshot:</p><p><a href="${absolute}">${absolute}</a></p>`,
+        attachments: [{ filename: path.basename(shot.path), path: shot.path }],
+      });
+    }
+    res.json({ ok: true, link: shot.link, url: absolute, email: email || null });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// Optional minimal UI if you kept /public; otherwise this is harmless.
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.send("Mediad AutoDirector API – v2-normalize");
 });
 
 app.use((_req, res) => res.status(404).send("Not Found"));
 
-app.listen(PORT, () => {
-  console.log(`Mediad backend listening on ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                            
+  
+  
+  
                                                             
   
   
