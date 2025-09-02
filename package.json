@@ -2,9 +2,7 @@
   "name": "mediad-autodirector",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
@@ -12,6 +10,10 @@
     "playwright": "^1.55.0"
   }
 }
+                    
+                      
+                      
+  
                     
                       
   
