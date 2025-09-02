@@ -1,14 +1,15 @@
 {
   "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.19.2",
     "nodemailer": "^6.9.13",
     "playwright": "^1.55.0"
   }
 }
+                    
+                      
+  
                     
                       
                       
