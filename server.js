@@ -1,280 +1,140 @@
-// server.js (ESM)
+// server.js  (ESM)
 import express from "express";
-import cors from "cors";
-import path from "path";
-import fs from "fs";
-import nodemailer from "nodemailer";
-import { fileURLToPath } from "url";
+import path from "node:path";
+import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import nodemailer from "nodemailer";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+app.use(express.json());
 
-// Ensure folders exist
-const RUNS_DIR = path.join(__dirname, "runs");
-const PUBLIC_DIR = path.join(__dirname, "public");
-if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
+// Make sure a persistent /app/runs exists (or attach a Render Disk to /app/runs)
+const RUNS_DIR = process.env.RUNS_DIR || path.join(process.cwd(), "runs");
+await fs.mkdir(RUNS_DIR, { recursive: true });
 
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-app.use("/runs", express.static(RUNS_DIR));
-app.use(express.static(PUBLIC_DIR));
+// Serve screenshots statically (handles GET and HEAD)
+app.use(
+  "/runs",
+  express.static(RUNS_DIR, {
+    fallthrough: false,
+    setHeaders(res) {
+      res.set("Cache-Control", "public, max-age=31536000, immutable");
+    },
+  })
+);
 
 // Health
 app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    service: "mediad-autodirector",
-    time: new Date().toISOString(),
-  });
+  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
 });
 
-// Helpers
-const absUrl = (req, rel) =>
-  new URL(rel, `${req.protocol}://${req.get("host")}`).toString();
-
-const rand = () => Math.random().toString(16).slice(2, 10);
-
-// ---------- ACTION EXECUTORS ----------
-async function doScreenshot(url) {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+// Tiny HTML UI (optional). If you already have an index.html, you can remove this.
+app.get("/", (req, res) => {
+  res.type("html").send(`<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Mediad AutoDirector</title>
+<style>body{font-family:system-ui,Segoe UI,Arial;background:#0b0f1a;color:#e8eefc;padding:24px}input,button{font-size:16px}input{width:100%;padding:14px;border-radius:10px;border:none;background:#10162a;color:#e8eefc}button{width:100%;padding:16px;margin-top:12px;border-radius:10px;border:none;background:#5ea3ff;color:#001130;font-weight:700;cursor:pointer}</style>
+</head>
+<body>
+  <h1>Mediad AutoDirector</h1>
+  <p>Capture a web page and email the screenshot.</p>
+  <div>
+    <label>Website URL</label>
+    <input id="u" placeholder="https://www.cnn.com" value="https://www.cnn.com">
+  </div>
+  <div style="margin-top:10px">
+    <label>Destination email (optional)</label>
+    <input id="e" placeholder="you@example.com">
+  </div>
+  <button id="go">Capture & Email</button>
+  <pre id="out" style="margin-top:12px;white-space:pre-wrap"></pre>
+<script>
+document.getElementById('go').onclick = async () => {
+  const url = document.getElementById('u').value.trim();
+  const email = document.getElementById('e').value.trim();
+  const r = await fetch('/api/capture', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ url, email: email || undefined })
   });
+  const j = await r.json();
+  document.getElementById('out').textContent = JSON.stringify(j, null, 2);
+};
+</script>
+</body></html>`);
+});
+
+// Nodemailer (Gmail App Password required)
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
+
+function absoluteUrl(req, relativePath) {
+  const base = process.env.PUBLIC_URL || `${req.protocol}://${req.get("host")}`;
+  return `${base}${relativePath.startsWith("/") ? relativePath : "/" + relativePath}`;
+}
+
+// Main API: capture & email
+app.post("/api/capture", async (req, res, next) => {
   try {
-    const context = await browser.newContext({ deviceScaleFactor: 1 });
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-    const filename = `${Date.now()}-${rand()}.png`;
-    const filepath = path.join(RUNS_DIR, filename);
-    await page.screenshot({ path: filepath, fullPage: true });
-    return { filepath, filename };
-  } finally {
+    const { url, email } = req.body || {};
+    if (!url) return res.status(400).json({ ok: false, error: "Missing 'url'." });
+
+    const to = email || process.env.GMAIL_USER;
+    if (!to) return res.status(400).json({ ok: false, error: "No destination email and GMAIL_USER not set." });
+
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.goto(url, { waitUntil: "networkidle" });
+
+    const filename = `${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
+    const relPath = `/runs/${filename}`;
+    const absPath = path.join(RUNS_DIR, filename);
+    await page.screenshot({ path: absPath, fullPage: true });
     await browser.close();
-  }
-}
 
-function mailer() {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) {
-    throw new Error(
-      "Missing GMAIL_USER or GMAIL_APP_PASSWORD env vars (needed for email)."
-    );
-  }
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-  });
-}
+    const link = absoluteUrl(req, relPath);
 
-async function sendEmailWithAttachment({ to, subject, text, attachmentPath }) {
-  const transport = mailer();
-  const user = process.env.GMAIL_USER;
-  const mailTo = to || user;
-  await transport.sendMail({
-    from: user,
-    to: mailTo,
-    subject: subject || "AutoDirector",
-    text: text || "See attachment.",
-    attachments: attachmentPath
-      ? [{ filename: path.basename(attachmentPath), path: attachmentPath }]
-      : undefined,
-  });
-  return { to: mailTo };
-}
-
-async function extractLinks(url, count = 3) {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
-  try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-    const links = await page.evaluate(() => {
-      const anchors = Array.from(document.querySelectorAll("a[href]"));
-      const out = anchors
-        .map((a) => a.href.trim())
-        .filter((u) => u.startsWith("http"));
-      // de-dupe
-      return Array.from(new Set(out));
+    // Email with attachment + link in the body
+    await transporter.sendMail({
+      from: `Mediad AutoDirector <${process.env.GMAIL_USER}>`,
+      to,
+      subject: `Screenshot of ${url}`,
+      text: `Here is your screenshot:\n${link}\n`,
+      html: `<p>Here is your screenshot:</p><p><a href="${link}">${link}</a></p><p><img src="${link}" alt="screenshot" style="max-width:100%"/></p>`,
+      attachments: [{ filename, path: absPath }],
     });
-    return links.slice(0, count);
-  } finally {
-    await browser.close();
-  }
-}
 
-async function createImageWithOpenAI(prompt) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY not set (needed for image generation).");
-  }
-  // Use the HTTP API directly; no response_format param, avoids earlier errors.
-  const resp = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-image-1",
-      prompt,
-      size: "1024x1024",
-      // return base64
-      response_format: "b64_json",
-    }),
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`OpenAI error: ${text}`);
-  }
-  const data = await resp.json();
-  const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) throw new Error("No image returned.");
-
-  const buf = Buffer.from(b64, "base64");
-  const filename = `${Date.now()}-${rand()}-img.png`;
-  const filepath = path.join(RUNS_DIR, filename);
-  fs.writeFileSync(filepath, buf);
-  return { filepath, filename };
-}
-
-// ---------- /plan : VERY SIMPLE RULE-BASED PARSER ----------
-app.post("/plan", async (req, res) => {
-  try {
-    const prompt = String(req.body?.prompt || "");
-    const lower = prompt.toLowerCase();
-
-    // Grab first URL + email if present
-    const urlMatch = prompt.match(
-      /(https?:\/\/[^\s"']+)|(www\.[^\s"']+)/i
-    );
-    const emailMatch = prompt.match(
-      /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i
-    );
-    const url = urlMatch ? (urlMatch[1] || urlMatch[2]) : null;
-    const to = emailMatch ? emailMatch[0] : null;
-
-    let steps = [];
-    let kind = "unknown";
-
-    if (lower.includes("screenshot") && url) {
-      kind = "screenshot";
-      steps.push({ action: "screenshot_url", url });
-      steps.push({ action: "gmail_send_last", to });
-    } else if (
-      (lower.includes("create image") ||
-        lower.includes("generate image") ||
-        lower.includes("picture")) &&
-      prompt
-    ) {
-      kind = "create_image";
-      const imagePrompt = prompt.replace(/send.*$/i, "").trim();
-      steps.push({ action: "create_image", prompt: imagePrompt });
-      steps.push({ action: "gmail_send_last", to });
-    } else if (
-      (lower.includes("get the latest links") ||
-        lower.includes("extract links") ||
-        lower.includes("send links")) &&
-      url
-    ) {
-      kind = "links";
-      const count = /(\d+)\s*links/.test(lower)
-        ? parseInt(lower.match(/(\d+)\s*links/)[1], 10)
-        : 3;
-      steps.push({ action: "extract_links", url, count });
-      steps.push({ action: "gmail_send_text", to });
-    } else {
-      return res.json({ ok: false, error: "No URL detected in your prompt." });
-    }
-
-    return res.json({
-      ok: true,
-      plan: { kind, url, to },
-      steps,
-    });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e.message || e) });
+    res.json({ ok: true, link: relPath, email: to });
+  } catch (err) {
+    next(err);
   }
 });
 
-// ---------- /run : EXECUTE STEPS ----------
-app.post("/run", async (req, res) => {
-  const steps = Array.isArray(req.body?.steps) ? req.body.steps : null;
-  if (!steps || steps.length === 0) {
-    return res.json({ ok: false, error: "No steps provided" });
-  }
-  const results = [];
-  const state = {}; // to carry last file or text between steps
-
-  try {
-    for (const step of steps) {
-      const { action } = step;
-      if (action === "screenshot_url") {
-        const { filepath, filename } = await doScreenshot(step.url);
-        state.lastFilePath = filepath;
-        results.push({
-          action,
-          path: `/runs/${filename}`,
-        });
-      } else if (action === "gmail_send_last") {
-        if (!state.lastFilePath && !step.attachmentPath) {
-          throw new Error("No attachment available to send.");
-        }
-        const sent = await sendEmailWithAttachment({
-          to: step.to,
-          subject: "AutoDirector Result",
-          text: "See attached file.",
-          attachmentPath: step.attachmentPath || state.lastFilePath,
-        });
-        results.push({ action, to: sent.to });
-      } else if (action === "extract_links") {
-        const links = await extractLinks(step.url, step.count || 3);
-        state.text = links.join("\n");
-        results.push({ action, links });
-      } else if (action === "gmail_send_text") {
-        const text = step.text || state.text || "(no text)";
-        const sent = await sendEmailWithAttachment({
-          to: step.to,
-          subject: "AutoDirector Links",
-          text,
-        });
-        results.push({ action, to: sent.to });
-      } else if (action === "create_image") {
-        const { filepath, filename } = await createImageWithOpenAI(
-          step.prompt
-        );
-        state.lastFilePath = filepath;
-        results.push({ action, path: `/runs/${filename}` });
-      } else {
-        throw new Error(`Unknown action: ${action}`);
-      }
-    }
-
-    return res.json({ ok: true, results });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e.message || e) });
-  }
+// JSON error handler (no "Unknown Error" anymore)
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ ok: false, error: err.message || "Internal Server Error" });
 });
 
-// Fallback: serve the app
-app.get("*", (req, res) => {
-  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-});
+// 404 as JSON
+app.use((req, res) => res.status(404).json({ ok: false, error: "Not Found" }));
 
-app.listen(PORT, () => {
-  console.log(`Mediad AutoDirector listening on ${PORT}`);
-});
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                                                
+  
+  
+  
+  
                                                             
   
   
