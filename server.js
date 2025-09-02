@@ -1,176 +1,133 @@
-// server.js (ESM) — full replacement
-
+// server.js (ESM)
 import express from "express";
+import cors from "cors";
 import path from "path";
-import fs from "fs/promises";
+import fs from "fs";
 import { fileURLToPath } from "url";
+import { chromium } from "playwright";
 import nodemailer from "nodemailer";
-import playwright from "playwright";
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
-app.use(express.json());
+// folders & config
+const RUNS_DIR = path.join(__dirname, "runs");
+fs.mkdirSync(RUNS_DIR, { recursive: true });
 
-// ------------------- CONFIG -------------------
 const PORT = process.env.PORT || 10000;
-const BASE_DIR = process.cwd();
-const RUNS_DIR = path.join(BASE_DIR, "runs");
-const PUBLIC_URL = process.env.PUBLIC_URL || `https://autodirector-backend-latest.onrender.com`;
-
-// Gmail credentials (Render → Environment)
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 const GMAIL_USER = process.env.GMAIL_USER || "";
-const GMAIL_PASS = process.env.GMAIL_APP_PASSWORD || "";
-const GMAIL_FROM = process.env.GMAIL_FROM || GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || "";
 
-// ------------------- EMAIL -------------------
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: { user: GMAIL_USER, pass: GMAIL_PASS },
-});
+// health
+app.get("/health", (req, res) =>
+  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() })
+);
 
-async function sendEmailWithAttachment({ to, subject, text, html, filePath, cid = "screenshot" }) {
+// serve screenshots
+app.use("/runs", express.static(RUNS_DIR, { fallthrough: false }));
+
+// ---------- helpers ----------
+async function doScreenshot(url) {
+  const ts = Date.now();
+  const name = `${ts}-${Math.random().toString(36).slice(2, 12)}.png`;
+  const full = path.join(RUNS_DIR, name);
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 1024 } });
+  await page.goto(url, { waitUntil: "load", timeout: 60000 });
+  await page.screenshot({ path: full, fullPage: true });
+  await browser.close();
+
+  return `/runs/${name}`;
+}
+
+async function sendEmail({ to, link }) {
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+    throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD");
+  }
+  const absoluteLink = `${BASE_URL}${link}`;
+  const filePath = path.join(RUNS_DIR, path.basename(link));
+  const cid = `shot-${Date.now()}@mediad`;
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+  });
+
+  const html = `
+    <p>Here is your screenshot:</p>
+    <p><img src="cid:${cid}" alt="screenshot" /></p>
+    <p>Direct link: <a href="${absoluteLink}">${absoluteLink}</a></p>`;
+  const text = `Here is your screenshot.\nDirect link: ${absoluteLink}\n(If the image doesn't display, click the link.)`;
+
   await transporter.sendMail({
-    from: GMAIL_FROM || GMAIL_USER,
-    to: to || GMAIL_USER, // default to self if none given
-    subject,
+    from: `"Mediad AutoDirector" <${GMAIL_USER}>`,
+    to,
+    subject: "Your screenshot",
     text,
     html,
-    attachments: filePath
-      ? [{ filename: path.basename(filePath), path: filePath, cid }]
-      : [],
+    attachments: [{ filename: path.basename(filePath), path: filePath, cid }],
   });
 }
 
-// ------------------- HELPERS -------------------
-async function ensureRunsDir() {
-  try { await fs.mkdir(RUNS_DIR, { recursive: true }); } catch {}
-}
+// ---------- routes ----------
 
-function publicFileUrl(relPath) {
-  return `${PUBLIC_URL}/${relPath.replace(/^\//, "")}`;
-}
-
-async function takeScreenshot(url) {
-  await ensureRunsDir();
-  const browser = await playwright.chromium.launch({ args: ["--no-sandbox"] });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
-  const absPath = path.join(RUNS_DIR, filename);
-  await page.screenshot({ path: absPath, fullPage: true });
-  await browser.close();
-  const relPath = `runs/${filename}`;
-  return { absPath, relPath, link: publicFileUrl(relPath) };
-}
-
-// ------------------- STATIC -------------------
-app.use("/runs", express.static(RUNS_DIR, { fallthrough: false }));
-
-// Serve minimal UI
-app.use(express.static(path.join(__dirname, "public")));
-
-// ------------------- HEALTH -------------------
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
-});
-
-// ------------------- QUICK (works without planner) -------------------
-app.post("/quick", async (req, res, next) => {
+// One-shot endpoint (already working)
+app.post("/quick", async (req, res) => {
   try {
     const { url, email } = req.body || {};
-    if (!url || !/^https?:\/\//i.test(url)) {
-      return res.status(400).json({ ok: false, error: "Invalid URL" });
+    if (!url) return res.status(400).json({ ok: false, error: "Missing url" });
+
+    const link = await doScreenshot(url);
+    if (email || GMAIL_USER) {
+      await sendEmail({ to: email || GMAIL_USER, link });
     }
-
-    const sc = await takeScreenshot(url);
-    const cid = `sc_${Date.now()}`;
-    const subject = "Mediad AutoDirector: screenshot";
-    const text = `Here is your screenshot of ${url}\nDirect link: ${sc.link}`;
-    const html = `
-      <p>Here is your screenshot of <a href="${url}">${url}</a>.</p>
-      <p><strong>Inline image (from attachment):</strong></p>
-      <p><img src="cid:${cid}" alt="screenshot" /></p>
-      <p>Direct link to file: <a href="${sc.link}">${sc.link}</a></p>
-    `;
-
-    await sendEmailWithAttachment({
-      to: email,
-      subject,
-      text,
-      html,
-      filePath: sc.absPath,
-      cid,
-    });
-
-    res.json({ ok: true, link: `/${sc.relPath}`, email: email || GMAIL_USER });
-  } catch (err) { next(err); }
+    res.json({ ok: true, link, email: email || GMAIL_USER || null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-// ------------------- PLAN (adds simple planner) -------------------
-app.post("/plan", async (req, res) => {
-  const prompt = (req.body?.prompt || "").trim();
+// New: /plan (simple parser)
+app.post("/plan", (req, res) => {
+  const { prompt } = req.body || {};
+  if (!prompt) return res.json({ ok: false, error: "No prompt" });
 
-  // Extract first URL
   const urlMatch = prompt.match(/https?:\/\/\S+/i);
-  const url = urlMatch ? urlMatch[0].replace(/[)"'.,;]+$/, "") : null;
+  if (!urlMatch) return res.json({ ok: false, error: "No URL detected in your prompt." });
 
-  // Extract email if any
-  const emailMatch = prompt.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  const to = emailMatch ? emailMatch[0] : GMAIL_USER;
-
-  if (!url) {
-    return res.json({ ok: false, error: "No URL detected in your prompt." });
-  }
-
-  // For now we only implement screenshot + email
-  const plan = { kind: "screenshot", url, to };
-  const steps = [
-    { action: "screenshot_url", url },
-    { action: "gmail_send_last", to },
-  ];
+  const emailMatch = prompt.match(/([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i);
+  const plan = { kind: "screenshot", url: urlMatch[0], to: emailMatch?.[1] };
+  const steps = [{ action: "screenshot_url", url: plan.url }];
+  if (plan.to) steps.push({ action: "gmail_send_last", to: plan.to });
 
   res.json({ ok: true, plan, steps });
 });
 
-// ------------------- RUN (executes planned steps) -------------------
-app.post("/run", async (req, res, next) => {
+// New: /run (executes steps from /plan)
+app.post("/run", async (req, res) => {
   try {
-    const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
-    if (!steps.length) return res.json({ ok: false, error: "No steps provided" });
+    const { steps } = req.body || {};
+    if (!Array.isArray(steps) || steps.length === 0) {
+      return res.json({ ok: false, error: "No steps provided" });
+    }
 
+    let lastLink = null;
     const results = [];
-    let lastScreenshotPath = null; // absolute path
-    let lastRel = null;           // relative (runs/xxx.png)
-
     for (const step of steps) {
       if (step.action === "screenshot_url") {
-        const url = step.url;
-        if (!url) throw new Error("screenshot_url missing 'url'");
-        const sc = await takeScreenshot(url);
-        lastScreenshotPath = sc.absPath;
-        lastRel = sc.relPath;
-        results.push({ action: "screenshot_url", path: `/${lastRel}` });
-
+        lastLink = await doScreenshot(step.url);
+        results.push({ action: "screenshot_url", path: lastLink });
       } else if (step.action === "gmail_send_last") {
         const to = step.to || GMAIL_USER;
-        if (!lastScreenshotPath) throw new Error("gmail_send_last has no screenshot to send");
-
-        const cid = `sc_${Date.now()}`;
-        const link = publicFileUrl(lastRel);
-        const subject = "Mediad AutoDirector: screenshot";
-        const text = `Here is your screenshot.\nDirect link: ${link}`;
-        const html = `
-          <p>Here is your screenshot:</p>
-          <p><img src="cid:${cid}" alt="screenshot" /></p>
-          <p>Direct link to file: <a href="${link}">${link}</a></p>
-        `;
-
-        await sendEmailWithAttachment({
-          to, subject, text, html, filePath: lastScreenshotPath, cid
-        });
-
+        if (!to) throw new Error("No destination email");
+        await sendEmail({ to, link: lastLink });
         results.push({ action: "gmail_send_last", to });
       } else {
         results.push({ action: step.action, skipped: true, reason: "Unknown action" });
@@ -178,19 +135,22 @@ app.post("/run", async (req, res, next) => {
     }
 
     res.json({ ok: true, results });
-  } catch (err) { next(err); }
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-// ------------------- ERROR HANDLER -------------------
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ ok: false, error: "Server error" });
+// Basic UI
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// ------------------- START -------------------
-app.listen(PORT, () => {
-  console.log(`Mediad backend listening on ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                            
+  
+  
+  
                                                                                                                         
   
   
