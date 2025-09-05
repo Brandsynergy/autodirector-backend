@@ -10,6 +10,9 @@ RUN mkdir -p /app/runs
 ENV PORT=10000
 EXPOSE 10000
 CMD ["node", "server.js"]
+                                        
+  
+  
                                                             
   
   
