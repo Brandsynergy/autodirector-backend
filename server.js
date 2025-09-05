@@ -1,412 +1,337 @@
- // server.js — Mediad AutoDirector v4-automation (ESM)
 import express from "express";
 import cors from "cors";
-import path from "node:path";
-import fs from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import nodemailer from "nodemailer";
 import { chromium } from "playwright";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 
-const VERSION = "v4-automation";
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-
-const RUNS_DIR = path.join(__dirname, "runs");
-await fs.mkdir(RUNS_DIR, { recursive: true });
-app.use("/runs", express.static(RUNS_DIR, { maxAge: 0 }));
-
+// ---------- config ----------
 const PORT = process.env.PORT || 10000;
+const RUNS_DIR = path.join(__dirname, "runs");
+if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
 
-/* ---------------- Utilities ---------------- */
+// Gmail creds must be set in Render env vars
+const GMAIL_USER = process.env.GMAIL_USER || "";
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || "";
+
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: GMAIL_USER,
+    pass: GMAIL_APP_PASSWORD
+  }
+});
+
+// ---------- helpers ----------
 function normalizeUrl(input) {
   if (!input) return null;
   let u = String(input).trim();
 
-  // fix common typos like https;//example.com
-  u = u.replace(/^https;\/*/i, "https://").replace(/^http;\/*/i, "http://");
+  // fix common typo: https;//  or http;//
+  u = u.replace(/;\/\//g, "://");
 
-  // add scheme if missing
-  if (!/^https?:\/\//i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+  // prepend https if missing scheme
+  if (!/^https?:\/\//i.test(u)) u = "https://" + u;
 
   try {
-    const urlObj = new URL(u);
-    if (!["http:", "https:"].includes(urlObj.protocol)) return null;
-    return urlObj.toString();
-  } catch {
+    return new URL(u).toString();
+  } catch (_) {
     return null;
   }
 }
 
-function getAbs(req, rel) {
-  return new URL(rel, `${req.protocol}://${req.get("host")}`).toString();
+function nowId() {
+  return Date.now() + "-" + Math.random().toString(36).slice(2, 10);
 }
 
-/* ---------------- Email ---------------- */
-function transporter() {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) {
-    throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD env vars.");
-  }
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: { user, pass },
-  });
+// Always return an HTTPS absolute URL on Render
+function getAbs(req, relPath) {
+  const host = req.get("host");
+  const protoHeader = (req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const proto = protoHeader || req.protocol || "https";
+  const base = `${proto}://${host}`;
+  const url = new URL(relPath, base);
+  if (host && host.endsWith(".onrender.com")) url.protocol = "https:";
+  return url.toString();
 }
 
-async function sendEmail({ to, subject, text, html, attachments }) {
-  const from = process.env.GMAIL_FROM || process.env.GMAIL_USER;
-  await transporter().sendMail({ from, to, subject, text, html, attachments });
+async function takeScreenshot(url) {
+  const id = nowId();
+  const outPath = path.join(RUNS_DIR, `${id}.png`);
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1366, height: 800 } });
+  await page.goto(url, { waitUntil: "networkidle" });
+  await page.screenshot({ path: outPath, fullPage: true });
+  await browser.close();
+  return outPath;
 }
 
-/* ---------------- Browser tasks ---------------- */
-async function withPage(fn) {
-  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  const page = await context.newPage();
-  try {
-    return await fn(page);
-  } finally {
-    await context.close();
-    await browser.close();
-  }
+async function savePdf(url) {
+  const id = nowId();
+  const outPath = path.join(RUNS_DIR, `${id}.pdf`);
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "networkidle" });
+  await page.pdf({ path: outPath, format: "A4", printBackground: true });
+  await browser.close();
+  return outPath;
 }
 
-async function takeScreenshot(rawUrl) {
-  const url = normalizeUrl(rawUrl);
-  if (!url) throw new Error(`Invalid URL: ${rawUrl}`);
+async function extractLinks(url, count = 3) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  const id = Date.now() + "-" + Math.random().toString(36).slice(2, 12);
-  const filename = `${id}.png`;
-  const filePath = path.join(RUNS_DIR, filename);
-
-  await withPage(async (page) => {
-    await page.goto(url, { waitUntil: "load", timeout: 45_000 });
-    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-    await page.screenshot({ path: filePath, fullPage: true });
-  });
-
-  return { path: filePath, link: `/runs/${filename}`, url };
-}
-
-async function savePdf(rawUrl) {
-  const url = normalizeUrl(rawUrl);
-  if (!url) throw new Error(`Invalid URL: ${rawUrl}`);
-
-  const id = Date.now() + "-" + Math.random().toString(36).slice(2, 12);
-  const filename = `${id}.pdf`;
-  const filePath = path.join(RUNS_DIR, filename);
-
-  await withPage(async (page) => {
-    await page.goto(url, { waitUntil: "load", timeout: 45_000 });
-    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-    // Playwright Chromium only
-    await page.emulateMedia({ media: "screen" });
-    await page.pdf({ path: filePath, format: "A4", printBackground: true });
-  });
-
-  return { path: filePath, link: `/runs/${filename}`, url };
-}
-
-async function extractLinks(rawUrl, count = 3) {
-  const url = normalizeUrl(rawUrl);
-  if (!url) throw new Error(`Invalid URL: ${rawUrl}`);
-
-  const items = await withPage(async (page) => {
-    await page.goto(url, { waitUntil: "load", timeout: 45_000 });
-    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-    const anchors = await page.$$eval("a", (as) =>
-      as
-        .map((a) => ({ text: (a.textContent || "").trim(), href: a.getAttribute("href") || "" }))
-        .filter((x) => x.href && x.text)
-    );
-    return anchors;
-  });
-
-  // absolutize and dedupe
-  const seen = new Set();
-  const out = [];
-  for (const a of items) {
-    let href = a.href;
-    try {
-      href = new URL(href, url).toString();
-    } catch {}
-    if (!seen.has(href)) {
-      seen.add(href);
-      out.push({ text: a.text.slice(0, 150), href });
-    }
-    if (out.length >= count) break;
-  }
-  return out;
-}
-
-/* ---------------- Planner ---------------- */
-function parseCount(text, fallback = 3) {
-  const m = String(text).match(/top\s+(\d+)|first\s+(\d+)|(\d+)\s+(?:links|items|articles)/i);
-  if (!m) return fallback;
-  const n = Number(m[1] || m[2] || m[3]);
-  return Number.isFinite(n) ? Math.max(1, Math.min(20, n)) : fallback;
-}
-
-function parseEmail(text) {
-  const m = String(text).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  return m ? m[0] : null;
-}
-
-function parseUrl(text) {
-  const m = String(text).match(
-    /https[;:]\/\/\S+|http[;:]\/\/\S+|www\.\S+|[a-z0-9.-]+\.[a-z]{2,}(?:\/\S*)?/i
+  const links = await page.$$eval("a", (as) =>
+    as
+      .map((a) => ({
+        href: a.href || "",
+        text: (a.textContent || "").trim().replace(/\s+/g, " ")
+      }))
+      .filter((x) => x.href.startsWith("http"))
   );
-  return m ? m[0] : null;
+
+  await browser.close();
+  return links.slice(0, Math.max(1, Math.min(20, count)));
 }
 
-function wantsLinks(text) {
-  return /(get|latest|top|extract).*(links|articles|stories)/i.test(text);
-}
-
-function wantsScreenshot(text) {
-  return /(screenshot|capture|image)/i.test(text);
-}
-
-function wantsPdf(text) {
-  return /\b(pdf|save as pdf|print to pdf)\b/i.test(text);
-}
-
-function planFromPrompt(prompt) {
-  const p = String(prompt || "");
-  const rawUrl = parseUrl(p);
-  const url = rawUrl ? normalizeUrl(rawUrl) : null;
-  const email = parseEmail(p);
-  const count = parseCount(p, 3);
-
-  const steps = [];
-
-  if (wantsLinks(p)) {
-    steps.push({ action: "extract_links", url: rawUrl || null, count });
-    if (email) steps.push({ action: "gmail_send_text", to: email });
-  } else if (wantsPdf(p)) {
-    steps.push({ action: "save_pdf_url", url: rawUrl || null });
-    if (email) steps.push({ action: "gmail_send_last", to: email });
-  } else {
-    // default to screenshot
-    steps.push({ action: "screenshot_url", url: rawUrl || null });
-    if (email) steps.push({ action: "gmail_send_last", to: email });
+async function sendEmail({ to, subject, text, html, attachments = [] }) {
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+    throw new Error("Email is not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD.");
   }
-
-  return { kind: "auto", url, to: email, count, steps };
+  await transporter.sendMail({
+    from: GMAIL_USER,
+    to,
+    subject,
+    text,
+    html,
+    attachments
+  });
 }
 
-/* ---------------- API ---------------- */
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "mediad-autodirector", version: VERSION, time: new Date().toISOString() });
+// ---------- app ----------
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "2mb" }));
+app.use("/runs", express.static(RUNS_DIR));
+app.use("/", express.static(path.join(__dirname, "public")));
+
+app.get("/health", (req, res) => {
+  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
 });
 
+// Quick tool: screenshot + optional email
+app.post("/quick", async (req, res) => {
+  try {
+    const raw = req.body?.url;
+    const email = (req.body?.email || "").trim();
+    const url = normalizeUrl(raw);
+    if (!url) return res.status(400).json({ ok: false, error: "Invalid URL" });
+
+    const filePath = await takeScreenshot(url);
+    const fileRel = "/runs/" + path.basename(filePath);
+    const absolute = getAbs(req, fileRel);
+
+    if (email) {
+      const subject = "Mediad AutoDirector – Screenshot";
+      const text = `Here is the screenshot for ${url}.\n\nLink: ${absolute}`;
+      const html = `<p>Here is the screenshot for <a href="${url}">${url}</a>.</p><p><a href="${absolute}">${absolute}</a></p>`;
+      await sendEmail({
+        to: email,
+        subject,
+        text,
+        html,
+        attachments: [{ filename: path.basename(filePath), path: filePath }]
+      });
+    }
+
+    res.json({ ok: true, link: fileRel, url: absolute, email: email || null });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ---------- PLAN (very simple parser) ----------
 app.post("/plan", (req, res) => {
   try {
-    const { prompt } = req.body || {};
-    const plan = planFromPrompt(prompt);
-    res.json({ ok: true, plan, steps: plan.steps });
+    const prompt = String(req.body?.prompt || "").trim();
+    if (!prompt) return res.json({ ok: false, error: "Missing prompt" });
+
+    // Pull the first URL-like string in the prompt
+    const urlMatch = prompt.match(/https?[s]?:\/\/[^\s"']+|(?:\b[\w.-]+\.[a-z]{2,}\b)/i);
+    const rawUrl = urlMatch ? urlMatch[0] : null;
+    const url = normalizeUrl(rawUrl);
+
+    const toMatch = prompt.match(/[^\s]+@[^\s]+/);
+    const to = toMatch ? toMatch[0] : null;
+
+    const lower = prompt.toLowerCase();
+
+    let steps = [];
+    let kind = "general";
+
+    if (/screenshot/.test(lower) && url) {
+      kind = "screenshot";
+      steps.push({ action: "screenshot_url", url });
+      if (to) steps.push({ action: "gmail_send_last", to });
+    } else if ((/pdf/.test(lower) || /save.*as.*pdf/.test(lower)) && url) {
+      kind = "pdf";
+      steps.push({ action: "pdf_url", url });
+      if (to) steps.push({ action: "gmail_send_last", to });
+    } else if (/links?/.test(lower) && url) {
+      kind = "links";
+      const count = /top\s+(\d+)/.test(lower) ? parseInt(lower.match(/top\s+(\d+)/)[1]) : 3;
+      steps.push({ action: "extract_links", url, count });
+      if (to) steps.push({ action: "gmail_send_text", to });
+    }
+
+    res.json({
+      ok: true,
+      plan: { kind, url, to, count: steps.find(s => s.action === "extract_links")?.count || null },
+      steps
+    });
   } catch (err) {
-    res.status(400).json({ ok: false, error: String(err.message || err) });
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
+// ---------- RUN ----------
 app.post("/run", async (req, res) => {
-  const steps = (req.body && req.body.steps) || [];
-  const results = [];
-  let lastArtifact = null; // { path, link, url }
+  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+  if (!steps.length) return res.json({ ok: false, error: "No steps provided" });
 
+  const results = [];
   try {
     for (const step of steps) {
-      const name = String(step.action || "").trim();
+      const name = step.action;
 
       if (name === "screenshot_url") {
-        if (!step.url) throw new Error("screenshot_url requires a URL");
-        lastArtifact = await takeScreenshot(step.url);
-        results.push({ action: name, link: lastArtifact.link, url: lastArtifact.url });
+        const url = normalizeUrl(step.url);
+        if (!url) throw new Error("screenshot_url requires a valid 'url'");
+        const filePath = await takeScreenshot(url);
+        results.push({ action: name, path: filePath, rel: "/runs/" + path.basename(filePath) });
       }
 
-      else if (name === "save_pdf_url") {
-        if (!step.url) throw new Error("save_pdf_url requires a URL");
-        lastArtifact = await savePdf(step.url);
-        results.push({ action: name, link: lastArtifact.link, url: lastArtifact.url });
+      else if (name === "pdf_url") {
+        const url = normalizeUrl(step.url);
+        if (!url) throw new Error("pdf_url requires a valid 'url'");
+        const filePath = await savePdf(url);
+        results.push({ action: name, path: filePath, rel: "/runs/" + path.basename(filePath) });
       }
 
       else if (name === "extract_links") {
-        if (!step.url) throw new Error("extract_links requires a URL");
-        const links = await extractLinks(step.url, Number(step.count) || 3);
-        lastArtifact = null; // not a file; it’s data
-        results.push({ action: name, count: links.length, links });
-      }
-
-      else if (name === "gmail_send_text") {
-        const to = step.to;
-        if (!to) throw new Error("gmail_send_text requires 'to'");
-        const last = results[results.length - 1];
-        const subject = "Mediad AutoDirector – results";
-        let text = "See results below.";
-        let html = "<p>See results below.</p>";
-
-        if (last?.links) {
-          text = last.links.map((l, i) => `${i + 1}. ${l.text} — ${l.href}`).join("\n");
-          html = "<ol>" + last.links.map((l) => `<li><a href="${l.href}">${l.text}</a></li>`).join("") + "</ol>";
-        }
-
-        await sendEmail({ to, subject, text, html });
-        results.push({ action: name, to });
+        const url = normalizeUrl(step.url);
+        if (!url) throw new Error("extract_links requires a valid 'url'");
+        const count = step.count || 3;
+        const links = await extractLinks(url, count);
+        results.push({ action: name, links });
       }
 
       else if (name === "gmail_send_last") {
         const to = step.to;
         if (!to) throw new Error("gmail_send_last requires 'to'");
-        if (!lastArtifact) throw new Error("No file to attach for gmail_send_last.");
-        const absolute = req ? getAbs(req, lastArtifact.link) : lastArtifact.link;
+        const last = results[results.length - 1] || {};
+        const subject = "Mediad AutoDirector – result";
 
-        await sendEmail({
-          to,
-          subject: `Mediad AutoDirector – ${lastArtifact.url}`,
-          text: `Here is your file: ${absolute}`,
-          html: `<p>Here is your file: <a href="${absolute}">${absolute}</a></p>`,
-          attachments: [{ filename: path.basename(lastArtifact.path), path: lastArtifact.path }],
-        });
+        let text = "See attached result.";
+        let html = "<p>See attached result.</p>";
 
-        results.push({ action: name, to, attachment: lastArtifact.link });
+        const attachments = [];
+        if (last.path && fs.existsSync(last.path)) {
+          attachments.push({ filename: path.basename(last.path), path: last.path });
+          const rel = "/runs/" + path.basename(last.path);
+          const abs = getAbs(req, rel);
+          text += `\n\nLink: ${abs}`;
+          html += `<p><a href="${abs}">${abs}</a></p>`;
+        } else if (Array.isArray(last.links) && last.links.length > 0) {
+          text = last.links.map((l, i) => `${i + 1}. ${l.text} — ${l.href}`).join("\n");
+          html = "<h3>Links</h3><ol>" +
+                 last.links.map((l) => `<li><a href="${l.href}">${l.text}</a></li>`).join("") +
+                 "</ol>";
+        } else {
+          text = "No file or links available from the previous step.";
+          html = "<p><b>No file or links available</b> from the previous step.</p>";
+        }
+
+        // Always add small debug so emails are never blank
+        const debug = JSON.stringify(last, null, 2);
+        text += `\n\n---\nDebug:\n${debug}`;
+        html += `<hr><pre style="white-space:pre-wrap;font-family:monospace">${debug}</pre>`;
+
+        await sendEmail({ to, subject, text, html, attachments });
+        results.push({ action: name, to, sent: true });
+      }
+
+      else if (name === "gmail_send_text") {
+        const to = step.to;
+        if (!to) throw new Error("gmail_send_text requires 'to'");
+        const last = results[results.length - 1] || {};
+        const subject = "Mediad AutoDirector – results";
+
+        let text = "See results below.";
+        let html = "<p>See results below.</p>";
+
+        if (Array.isArray(last.links) && last.links.length > 0) {
+          text = last.links.map((l, i) => `${i + 1}. ${l.text} — ${l.href}`).join("\n");
+          html = "<h3>Links</h3><ol>" +
+                 last.links.map((l) => `<li><a href="${l.href}">${l.text}</a></li>`).join("") +
+                 "</ol>";
+        } else if (Array.isArray(last.links) && last.links.length === 0) {
+          text = "No links were found on that page.";
+          html = "<p><b>No links were found</b> on that page.</p>";
+        } else if (last.action) {
+          text = `No items were returned by action "${last.action}".`;
+          html = `<p>No items were returned by action "<b>${last.action}</b>".</p>`;
+        }
+
+        const debug = JSON.stringify(last, null, 2);
+        text += `\n\n---\nDebug:\n${debug}`;
+        html += `<hr><pre style="white-space:pre-wrap;font-family:monospace">${debug}</pre>`;
+
+        await sendEmail({ to, subject, text, html });
+        results.push({ action: name, to, sent: true });
       }
 
       else {
-        results.push({ action: name, skipped: true, reason: "Unknown action" });
+        throw new Error(`Unknown action: ${name}`);
       }
     }
 
-    res.json({ ok: true, results });
+    res.json({ ok: true, results: results.map((r) => {
+      if (r.rel) return { action: r.action, path: r.rel };
+      return r;
+    })});
   } catch (err) {
-    res.status(400).json({ ok: false, error: String(err.message || err), results });
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-app.post("/quick", async (req, res) => {
-  try {
-    const { url: rawUrl, email } = req.body || {};
-    const shot = await takeScreenshot(rawUrl);
-    const absolute = getAbs(req, shot.link);
-    if (email) {
-      await sendEmail({
-        to: email,
-        subject: `Mediad AutoDirector – ${shot.url}`,
-        text: `Here is your screenshot: ${absolute}`,
-        html: `<p>Here is your screenshot: <a href="${absolute}">${absolute}</a></p>`,
-        attachments: [{ filename: path.basename(shot.path), path: shot.path }],
-      });
-    }
-    res.json({ ok: true, link: shot.link, url: absolute, email: email || null });
-  } catch (err) {
-    res.status(400).json({ ok: false, error: String(err.message || err) });
-  }
+app.listen(PORT, () => {
+  console.log(`Mediad backend listening on ${PORT}`);
 });
-
-/* ---------------- Minimal UI (Plan/Run + Quick) ---------------- */
-const HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Mediad AutoDirector</title>
-<style>
-  :root{--bg:#0b1020;--panel:#151b2e;--text:#e8ecff;--muted:#9aa3c1;--accent:#5aa0ff;--ok:#22c55e;--err:#ef4444}
-  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial}
-  .wrap{max-width:900px;margin:40px auto;padding:0 20px}
-  .card{background:linear-gradient(180deg,#161d33,#11182a);border:1px solid #1d2742;border-radius:16px;padding:18px 20px;box-shadow:0 10px 30px rgba(0,0,0,.4);margin-bottom:22px}
-  h1{font-size:20px;margin:0 0 8px}
-  .muted{color:var(--muted);font-size:13px;margin-bottom:12px}
-  label{display:block;color:var(--muted);font-size:12px;margin:10px 0 6px}
-  input,textarea{width:100%;background:#0e1426;border:1px solid #263153;border-radius:10px;color:var(--text);padding:10px 12px}
-  textarea{min-height:90px}
-  .row{display:flex;gap:10px;align-items:flex-end}
-  .row>div{flex:1}
-  button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
-  pre{background:#0e1426;border:1px solid #263153;border-radius:10px;padding:10px;white-space:pre-wrap}
-  .ok{color:var(--ok)} .err{color:var(--err)}
-</style>
-</head><body>
-<div class="wrap">
-  <div class="card">
-    <h1>Mediad AutoDirector</h1>
-    <div class="muted">Plan → Run automation from a natural-language prompt. Version <b>${VERSION}</b></div>
-    <label>Prompt</label>
-    <textarea id="prompt" placeholder='e.g. "Get top 3 links from https://inc.com and email to you@example.com"'></textarea>
-    <div class="row" style="margin-top:10px">
-      <button id="btnPlan">Plan</button>
-      <button id="btnRun">Run (uses last plan)</button>
-    </div>
-    <label>Planned Steps</label>
-    <pre id="planBox">[ ]</pre>
-    <label>Run Output</label>
-    <pre id="runBox">—</pre>
-  </div>
-
-  <div class="card">
-    <h1>Quick: Screenshot</h1>
-    <div class="row">
-      <div><label>Website URL</label><input id="qUrl" placeholder="https://cnn.com or https;//cnn.com"/></div>
-      <div><label>Email (optional)</label><input id="qEmail" placeholder="you@example.com"/></div>
-      <div style="flex:0"><button id="qBtn">Run Quick</button></div>
-    </div>
-    <label>Output</label>
-    <pre id="qOut">—</pre>
-  </div>
-</div>
-<script>
-let lastSteps = [];
-const planBox = document.getElementById('planBox');
-const runBox = document.getElementById('runBox');
-const btnPlan = document.getElementById('btnPlan');
-const btnRun = document.getElementById('btnRun');
-const promptEl = document.getElementById('prompt');
-
-btnPlan.onclick = async () => {
-  runBox.textContent = '—';
-  const resp = await fetch('/plan', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ prompt: promptEl.value })
-  });
-  const data = await resp.json();
-  if (!data.ok) { planBox.textContent = 'Error: ' + data.error; return; }
-  lastSteps = data.steps || [];
-  planBox.textContent = JSON.stringify(lastSteps, null, 2);
-};
-
-btnRun.onclick = async () => {
-  const resp = await fetch('/run', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ steps: lastSteps })
-  });
-  const data = await resp.json();
-  runBox.textContent = JSON.stringify(data, null, 2);
-};
-
-const qUrl = document.getElementById('qUrl');
-const qEmail = document.getElementById('qEmail');
-const qBtn = document.getElementById('qBtn');
-const qOut = document.getElementById('qOut');
-
-qBtn.onclick = async () => {
-  const resp = await fetch('/quick', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ url: qUrl.value, email: qEmail.value || null })
-  });
-  const data = await resp.json();
-  qOut.textContent = JSON.stringify(data, null, 2);
-};
-</script>
-</body></html>`;
-app.get("/", (_req, res) => {
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(HTML);
-});
-
-app.use((_req, res) => res.status(404).send("Not Found"));
-app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                                                                                                                                                                                                                                                                                                
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
                                                                                                    
   
   
