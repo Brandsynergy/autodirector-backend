@@ -1,4 +1,4 @@
-// server.js  — Mediad AutoDirector (ESM)
+// server.js — Mediad AutoDirector (ESM, with built-in homepage fallback)
 
 import express from "express";
 import cors from "cors";
@@ -7,29 +7,23 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// create the app FIRST
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// middleware
+// ---------- middleware ----------
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
-// static folders
+// serve generated screenshots
 app.use("/runs", express.static(path.join(__dirname, "runs")));
-app.use("/", express.static(path.join(__dirname, "public")));
 
-// health
-app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
-});
+// serve optional public folder if it exists (no error if missing)
+app.use("/", express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
-// -------- helpers --------
-
+// ---------- helpers ----------
 function normalizeUrl(u) {
   if (!u) return null;
   let s = String(u).trim();
@@ -40,9 +34,7 @@ function normalizeUrl(u) {
 }
 
 async function takeScreenshot(url) {
-  // lazy import so the server boots even if playwright isn’t ready yet
   const { chromium } = await import("playwright");
-
   await fs.mkdir(path.join(__dirname, "runs"), { recursive: true });
 
   const file = `${Date.now()}-${Math.random().toString(16).slice(2)}.png`;
@@ -55,7 +47,6 @@ async function takeScreenshot(url) {
 
   await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
   await page.screenshot({ path: outPath, fullPage: true });
-
   await browser.close();
 
   return { file, path: outPath, href: `/runs/${file}` };
@@ -86,10 +77,12 @@ async function sendEmail({ to, subject, text, html, attachmentPath }) {
   return { messageId: info.messageId, to: mail.to };
 }
 
-// -------- endpoints --------
+// ---------- endpoints ----------
+app.get("/health", (req, res) => {
+  res.json({ ok: true, service: "mediad-autodirector", time: new Date().toISOString() });
+});
 
-// 1) Quick: one-shot (URL → screenshot → optional email)
-app.post("/quick", async (req, res) => {
+app.post("/quick", async (req, res, next) => {
   try {
     const rawUrl = req.body?.url;
     const email = req.body?.email || undefined;
@@ -116,15 +109,12 @@ app.post("/quick", async (req, res) => {
       email: emailResult?.to || null,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message || "unknown error" });
+    next(err);
   }
 });
 
-// 2) Plan: extract steps from a simple English instruction
 app.post("/plan", (req, res) => {
   const prompt = String(req.body?.prompt || "");
-  // very simple pattern: “Screenshot <url> and email it to <email>”
   const m = prompt.match(/screenshot\s+(\S+)\s+and\s+email\s+it\s+to\s+([^\s]+)/i);
   const url = m?.[1] ? normalizeUrl(m[1]) : null;
   const to = m?.[2] ? m[2].replace(/[.,]$/, "") : null;
@@ -138,8 +128,7 @@ app.post("/plan", (req, res) => {
 
 let lastScreenshotPath = null;
 
-// 3) Run: execute the steps from /plan
-app.post("/run", async (req, res) => {
+app.post("/run", async (req, res, next) => {
   try {
     const steps = req.body?.steps || [];
     const results = [];
@@ -170,20 +159,106 @@ app.post("/run", async (req, res) => {
 
     res.json({ ok: true, results });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message || "unknown error" });
+    next(err);
   }
 });
 
-// homepage fallback (if static misses for any reason)
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+// ---------- homepage route with safe fallback ----------
+const HOMEPAGE_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mediad AutoDirector</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
+    .wrap { max-width: 860px; margin: 40px auto; padding: 24px; background:#111827; border-radius:14px; }
+    h1 { font-size: 26px; margin: 0 0 6px; }
+    p  { margin: 0 0 18px; color:#9ca3af; }
+    label { display:block; margin:14px 0 6px; font-weight:600; }
+    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:#e5e7eb; }
+    button { margin-top:16px; width:100%; padding:14px; border:0; border-radius:10px; background:#60a5fa; color:#041025; font-weight:700; cursor:pointer; }
+    pre, .result { margin-top:18px; padding:14px; background:#0b1220; border:1px solid #1f2937; border-radius:10px; overflow:auto; }
+    a { color:#93c5fd; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Mediad AutoDirector</h1>
+    <p>Capture a live webpage screenshot and (optionally) email it.</p>
+
+    <label>Website URL</label>
+    <input id="url" placeholder="https://www.cnn.com" value="https://www.cnn.com" />
+
+    <label>Destination email (optional)</label>
+    <input id="email" placeholder="you@example.com (leave blank to skip email)" />
+
+    <button id="go">Capture & Email</button>
+
+    <div id="out" class="result" style="display:none"></div>
+    <div id="img" class="result" style="display:none"></div>
+  </div>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    byId('go').onclick = async () => {
+      const url = byId('url').value.trim();
+      const email = byId('email').value.trim();
+      byId('out').style.display = 'block';
+      byId('img').style.display = 'none';
+      byId('out').textContent = 'Working…';
+
+      try {
+        const res = await fetch('/quick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, email: email || undefined })
+        });
+        const data = await res.json();
+        byId('out').textContent = JSON.stringify(data, null, 2);
+
+        if (data.ok && (data.url || data.link)) {
+          const link = data.url || (location.origin + data.link);
+          byId('img').style.display = 'block';
+          byId('img').innerHTML = \`
+            <div>Link: <a href="\${link}" target="_blank">\${link}</a></div>
+            <div style="margin-top:12px"><img src="\${link}" style="max-width:100%"/></div>
+          \`;
+        }
+      } catch (e) {
+        byId('out').textContent = 'Error: ' + (e?.message || e);
+      }
+    };
+  </script>
+</body>
+</html>`;
+
+// Try to serve /public/index.html; if missing, serve inline fallback
+app.get("/", async (req, res) => {
+  try {
+    const filePath = path.join(__dirname, "public", "index.html");
+    const html = await fs.readFile(filePath, "utf8");
+    res.type("html").send(html);
+  } catch {
+    res.type("html").send(HOMEPAGE_HTML);
+  }
 });
 
-// start
+// ---------- error handler (prevents crashes) ----------
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ ok: false, error: err?.message || "unknown error" });
+});
+
+// ---------- start ----------
 app.listen(PORT, () => {
   console.log(`Mediad backend listening on ${PORT}`);
 });
+                                                                                
+  
+  
+  
+  
                                                                                 
   
   
