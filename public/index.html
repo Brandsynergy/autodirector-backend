@@ -2,25 +2,22 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mediad AutoDirector</title>
   <style>
     :root { color-scheme: dark; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#0f1420; color:#e7ecf3; }
-    .wrap { max-width: 900px; margin: 40px auto; padding: 24px; background: #111827; border: 1px solid #1f2937; border-radius: 16px; }
-    h1 { margin:0 0 16px; font-size: 28px; }
-    label { display:block; margin:18px 0 8px; color:#b8c3d6; }
-    input { width:100%; padding:14px 16px; border-radius: 12px; border:1px solid #263244; background:#0b1220; color:#e7ecf3; outline:none; }
-    button { margin-top:18px; width:100%; padding:16px; border-radius:14px; background:#5aa2ff; border:none; color:#0b1220; font-weight:700; cursor:pointer; }
-    pre { white-space: pre-wrap; padding: 12px; background:#0b1220; border:1px solid #1f2937; border-radius: 12px; }
-    .row { display:flex; gap:14px; align-items:center; }
-    .row > * { flex:1; }
+    body { margin:0; background:#0f1420; color:#e7ecf3; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { max-width: 900px; margin: 36px auto; padding: 24px; background:#111827; border:1px solid #1f2937; border-radius:16px; }
+    h1 { margin:0 0 10px; font-size: 28px; }
+    label { display:block; margin:14px 0 8px; color:#b8c3d6; }
+    input { width:100%; padding:14px 16px; border-radius:12px; border:1px solid #263244; background:#0b1220; color:#e7ecf3; }
+    button { width:100%; padding:16px; margin-top:16px; border:none; border-radius:12px; background:#5aa2ff; color:#00111f; font-weight:700; cursor:pointer; }
+    pre { white-space:pre-wrap; padding:12px; border:1px solid #1f2937; border-radius:12px; background:#0b1220; }
     a { color:#8bc2ff; }
-    img { max-width:100%; border-radius:12px; margin-top:12px; border:1px solid #1f2937; }
-    .small { color:#8aa0b8; font-size: 14px; }
+    img { max-width:100%; border:1px solid #1f2937; border-radius:12px; margin-top:12px; }
+    .row { display:flex; gap:12px; }
+    .row > div { flex: 1; }
+    .small { color:#8aa0b8; font-size:14px; }
   </style>
 </head>
 <body>
@@ -31,7 +28,7 @@
     <div class="row">
       <div>
         <label>Website URL</label>
-        <input id="url" type="url" placeholder="https://www.cnn.com" value="https://www.cnn.com" />
+        <input id="url" type="url" value="https://www.cnn.com" />
       </div>
       <div>
         <label>Destination email (optional)</label>
@@ -41,7 +38,7 @@
 
     <button id="go">Capture &amp; Email</button>
 
-    <div id="out" style="margin-top:18px"></div>
+    <div id="out" style="margin-top:16px"></div>
   </div>
 
   <script>
@@ -62,9 +59,14 @@
         if (!data.ok) throw new Error(data.error || 'Unknown error');
 
         const json = JSON.stringify(data, null, 2);
-        const img = data.url ? `<img src="${data.url}" alt="screenshot" />` : '';
-        const link = data.url ? `<p>Link: <a href="${data.url}" target="_blank">${data.url}</a></p>` : '';
-        outEl.innerHTML = `<pre>${json}</pre>${link}${img}`;
+        const linkHtml = data.url ? `<p>Link: <a href="${data.url}" target="_blank" rel="noopener">${data.url}</a></p>` : '';
+
+        // Prefer inline preview to avoid any browser/CDN issues
+        const preview = data.inline
+          ? `<img src="${data.inline}" alt="screenshot" />`
+          : (data.url ? `<img src="${data.url}" alt="screenshot" />` : '');
+
+        outEl.innerHTML = `<pre>${json}</pre>${linkHtml}${preview}`;
       } catch (e) {
         outEl.innerHTML = `<pre style="color:#ffbdbd">Error: ${e.message}</pre>`;
       }
@@ -72,6 +74,11 @@
   </script>
 </body>
 </html>
+                                                                                
+  
+  
+  
+  
                                                                                                     
   
   
