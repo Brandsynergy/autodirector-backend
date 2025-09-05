@@ -2,112 +2,76 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Mediad AutoDirector</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { background:#0e1420; color:#dbe4ff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-    .wrap { max-width: 900px; margin: 40px auto; padding: 24px; background:#121a2a; border-radius:14px; }
-    h1 { margin:0 0 6px; font-size:28px; }
-    p  { color:#9fb3d9 }
-    .card{ margin-top:18px; padding:16px; background:#0b1220; border:1px solid #19233a; border-radius:12px;}
-    label{display:block;margin-bottom:6px;color:#9fb3d9}
-    input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #233252;background:#0f1728;color:#eaf2ff;}
-    button{width:100%;margin-top:12px;padding:14px;border:0;border-radius:10px;background:#5aa2ff;color:#04112b;font-weight:700;cursor:pointer}
-    pre{white-space:pre-wrap;background:#0a1020;padding:12px;border-radius:10px;border:1px solid #19233a}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    @media(max-width:800px){.row{grid-template-columns:1fr}}
-    a { color:#8cc3ff }
+    body { font-family: system-ui, Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
+    .wrap { max-width: 860px; margin: 40px auto; padding: 24px; background:#111827; border-radius:14px; }
+    h1 { font-size: 26px; margin: 0 0 6px; }
+    p  { margin: 0 0 18px; color:#9ca3af; }
+    label { display:block; margin:14px 0 6px; font-weight:600; }
+    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:#e5e7eb; }
+    button { margin-top:16px; width:100%; padding:14px; border:0; border-radius:10px; background:#60a5fa; color:#041025; font-weight:700; cursor:pointer; }
+    pre, .result { margin-top:18px; padding:14px; background:#0b1220; border:1px solid #1f2937; border-radius:10px; overflow:auto; }
+    a { color:#93c5fd; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Mediad AutoDirector</h1>
-    <p>One-click website screenshot → optional email. Or use the Plan/Run section below.</p>
+    <p>Capture a live webpage screenshot and (optionally) email it.</p>
 
-    <div class="card">
-      <label>Website URL</label>
-      <input id="quick-url" value="https://www.cnn.com" />
-      <label>Destination email (optional)</label>
-      <input id="quick-email" placeholder="you@example.com" />
-      <button onclick="runQuick()">Capture &amp; Email</button>
-      <div id="quick-out" style="margin-top:12px"></div>
-    </div>
+    <label>Website URL</label>
+    <input id="url" placeholder="https://www.cnn.com" value="https://www.cnn.com" />
 
-    <div class="card">
-      <h3>Plan / Run</h3>
-      <div class="row">
-        <div>
-          <label>Describe what to automate</label>
-          <input id="prompt" value="Screenshot https://cnn.com and email it to support@mivado.co" />
-          <div class="row">
-            <button onclick="plan()">Plan</button>
-            <button onclick="run()">Run</button>
-          </div>
-        </div>
-        <div>
-          <label>Output</label>
-          <pre id="plan-out">—</pre>
-          <pre id="run-out">—</pre>
-        </div>
-      </div>
-      <p style="margin-top:12px;color:#789">
-        Examples: “Screenshot https://cnn.com and email it to you@example.com”.
-        “Get top 3 links from https://www.inc.com and email to me@example.com”.
-        “Save https://example.com as PDF and email to me@example.com”.
-      </p>
-    </div>
+    <label>Destination email (optional)</label>
+    <input id="email" placeholder="you@example.com (leave blank to use server default)" />
 
-    <div class="card">
-      <h3>Endpoints</h3>
-      <pre>
-GET  /health
-POST /quick { url, email? }
-POST /plan  { prompt }
-POST /run   { steps: [...] }
-Static files: /runs/&lt;file&gt;
-      </pre>
-    </div>
+    <button id="go">Capture & Email</button>
+
+    <div id="out" class="result" style="display:none"></div>
+    <div id="img" class="result" style="display:none"></div>
   </div>
 
-<script>
-async function runQuick(){
-  const url = document.getElementById('quick-url').value.trim();
-  const email = document.getElementById('quick-email').value.trim();
-  const r = await fetch('/quick', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ url, email })
-  }).then(r=>r.json()).catch(e=>({ok:false,error:e.message}));
-  document.getElementById('quick-out').innerHTML =
-    r.ok ? `✅ Success.<br>Link: <a href="${r.url}" target="_blank">${r.url}</a><br>Email: ${r.email||"(not sent)"}`
-         : `❌ ${r.error}`;
-}
+  <script>
+    const byId = (id) => document.getElementById(id);
+    byId('go').onclick = async () => {
+      const url = byId('url').value.trim();
+      const email = byId('email').value.trim();
+      byId('out').style.display = 'block';
+      byId('img').style.display = 'none';
+      byId('out').textContent = 'Working…';
 
-let lastPlan = null;
+      try {
+        const res = await fetch('/quick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, email: email || undefined })
+        });
+        const data = await res.json();
+        byId('out').textContent = JSON.stringify(data, null, 2);
 
-async function plan(){
-  const prompt = document.getElementById('prompt').value;
-  const r = await fetch('/plan', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ prompt })
-  }).then(r=>r.json());
-  lastPlan = r;
-  document.getElementById('plan-out').textContent = JSON.stringify(r, null, 2);
-}
-
-async function run(){
-  if (!lastPlan || !lastPlan.steps) {
-    document.getElementById('run-out').textContent = "Plan first (no steps).";
-    return;
-  }
-  const r = await fetch('/run', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ steps: lastPlan.steps })
-  }).then(r=>r.json());
-  document.getElementById('run-out').textContent = JSON.stringify(r, null, 2);
-}
-</script>
+        if (data.ok && (data.url || data.link)) {
+          const link = data.url || (location.origin + data.link);
+          byId('img').style.display = 'block';
+          byId('img').innerHTML = `
+            <div>Link: <a href="${link}" target="_blank">${link}</a></div>
+            <div style="margin-top:12px"><img src="${link}" style="max-width:100%"/></div>
+          `;
+        }
+      } catch (e) {
+        byId('out').textContent = 'Error: ' + (e?.message || e);
+      }
+    };
+  </script>
 </body>
 </html>
+                                                                                                    
+  
+  
+  
+  
+  
                                                                                 
   
   
