@@ -2,70 +2,82 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  />
   <title>Mediad AutoDirector</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
-    .wrap { max-width: 860px; margin: 40px auto; padding: 24px; background:#111827; border-radius:14px; }
-    h1 { font-size: 26px; margin: 0 0 6px; }
-    p  { margin: 0 0 18px; color:#9ca3af; }
-    label { display:block; margin:14px 0 6px; font-weight:600; }
-    input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid #1f2937; background:#0b1220; color:#e5e7eb; }
-    button { margin-top:16px; width:100%; padding:14px; border:0; border-radius:10px; background:#60a5fa; color:#041025; font-weight:700; cursor:pointer; }
-    pre, .result { margin-top:18px; padding:14px; background:#0b1220; border:1px solid #1f2937; border-radius:10px; overflow:auto; }
-    a { color:#93c5fd; }
+    :root { color-scheme: dark; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#0f1420; color:#e7ecf3; }
+    .wrap { max-width: 900px; margin: 40px auto; padding: 24px; background: #111827; border: 1px solid #1f2937; border-radius: 16px; }
+    h1 { margin:0 0 16px; font-size: 28px; }
+    label { display:block; margin:18px 0 8px; color:#b8c3d6; }
+    input { width:100%; padding:14px 16px; border-radius: 12px; border:1px solid #263244; background:#0b1220; color:#e7ecf3; outline:none; }
+    button { margin-top:18px; width:100%; padding:16px; border-radius:14px; background:#5aa2ff; border:none; color:#0b1220; font-weight:700; cursor:pointer; }
+    pre { white-space: pre-wrap; padding: 12px; background:#0b1220; border:1px solid #1f2937; border-radius: 12px; }
+    .row { display:flex; gap:14px; align-items:center; }
+    .row > * { flex:1; }
+    a { color:#8bc2ff; }
+    img { max-width:100%; border-radius:12px; margin-top:12px; border:1px solid #1f2937; }
+    .small { color:#8aa0b8; font-size: 14px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Mediad AutoDirector</h1>
-    <p>Capture a live webpage screenshot and (optionally) email it.</p>
+    <p class="small">Capture a live webpage screenshot and email it automatically.</p>
 
-    <label>Website URL</label>
-    <input id="url" placeholder="https://www.cnn.com" value="https://www.cnn.com" />
+    <div class="row">
+      <div>
+        <label>Website URL</label>
+        <input id="url" type="url" placeholder="https://www.cnn.com" value="https://www.cnn.com" />
+      </div>
+      <div>
+        <label>Destination email (optional)</label>
+        <input id="email" type="email" placeholder="you@example.com" />
+      </div>
+    </div>
 
-    <label>Destination email (optional)</label>
-    <input id="email" placeholder="you@example.com (leave blank to skip email)" />
+    <button id="go">Capture &amp; Email</button>
 
-    <button id="go">Capture & Email</button>
-
-    <div id="out" class="result" style="display:none"></div>
-    <div id="img" class="result" style="display:none"></div>
+    <div id="out" style="margin-top:18px"></div>
   </div>
 
   <script>
-    const byId = (id) => document.getElementById(id);
-    byId('go').onclick = async () => {
-      const url = byId('url').value.trim();
-      const email = byId('email').value.trim();
-      byId('out').style.display = 'block';
-      byId('img').style.display = 'none';
-      byId('out').textContent = 'Working…';
+    const urlEl = document.getElementById('url');
+    const emailEl = document.getElementById('email');
+    const outEl = document.getElementById('out');
+    const goEl = document.getElementById('go');
 
+    goEl.onclick = async () => {
+      outEl.innerHTML = '<pre>Working…</pre>';
       try {
-        const res = await fetch('/quick', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, email: email || undefined })
+        const resp = await fetch('/quick', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ url: urlEl.value.trim(), email: emailEl.value.trim() || undefined })
         });
-        const data = await res.json();
-        byId('out').textContent = JSON.stringify(data, null, 2);
+        const data = await resp.json();
+        if (!data.ok) throw new Error(data.error || 'Unknown error');
 
-        if (data.ok && (data.url || data.link)) {
-          const link = data.url || (location.origin + data.link);
-          byId('img').style.display = 'block';
-          byId('img').innerHTML = `
-            <div>Link: <a href="${link}" target="_blank">${link}</a></div>
-            <div style="margin-top:12px"><img src="${link}" style="max-width:100%"/></div>
-          `;
-        }
+        const json = JSON.stringify(data, null, 2);
+        const img = data.url ? `<img src="${data.url}" alt="screenshot" />` : '';
+        const link = data.url ? `<p>Link: <a href="${data.url}" target="_blank">${data.url}</a></p>` : '';
+        outEl.innerHTML = `<pre>${json}</pre>${link}${img}`;
       } catch (e) {
-        byId('out').textContent = 'Error: ' + (e?.message || e);
+        outEl.innerHTML = `<pre style="color:#ffbdbd">Error: ${e.message}</pre>`;
       }
     };
   </script>
 </body>
 </html>
+                                                                                                    
+  
+  
+  
+  
+  
                                                                                 
   
   
