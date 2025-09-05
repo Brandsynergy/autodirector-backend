@@ -1,108 +1,118 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Mediad AutoDirector</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0b0f14; color:#e8eef6; }
-    .shell { max-width: 980px; margin: 40px auto; padding: 24px; background:#0f1620; border:1px solid #1b2533; border-radius:14px; }
-    h1 { margin:0 0 10px 0; font-size:28px; }
-    .sub { opacity:.7; margin-bottom:24px; }
-    label { display:block; font-size:14px; opacity:.85; margin:14px 0 8px; }
-    input, textarea { width:100%; padding:12px 14px; background:#111a24; color:#e8eef6; border:1px solid #223047; border-radius:10px; }
-    .row { display:flex; gap:12px; }
-    .row > * { flex:1; }
-    button { background:#5aa1ff; color:#021126; border:0; border-radius:10px; padding:12px 18px; font-weight:700; cursor:pointer; }
-    pre { background:#0c131b; border:1px solid #1c2838; padding:12px; border-radius:10px; overflow:auto; }
-    .ok { color:#82ffa1; }
-    .err { color:#ff9393; }
+    body { background:#0e1420; color:#dbe4ff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    .wrap { max-width: 900px; margin: 40px auto; padding: 24px; background:#121a2a; border-radius:14px; }
+    h1 { margin:0 0 6px; font-size:28px; }
+    p  { color:#9fb3d9 }
+    .card{ margin-top:18px; padding:16px; background:#0b1220; border:1px solid #19233a; border-radius:12px;}
+    label{display:block;margin-bottom:6px;color:#9fb3d9}
+    input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #233252;background:#0f1728;color:#eaf2ff;}
+    button{width:100%;margin-top:12px;padding:14px;border:0;border-radius:10px;background:#5aa2ff;color:#04112b;font-weight:700;cursor:pointer}
+    pre{white-space:pre-wrap;background:#0a1020;padding:12px;border-radius:10px;border:1px solid #19233a}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    @media(max-width:800px){.row{grid-template-columns:1fr}}
+    a { color:#8cc3ff }
   </style>
 </head>
 <body>
-  <div class="shell">
+  <div class="wrap">
     <h1>Mediad AutoDirector</h1>
-    <div class="sub">Natural-language → plan → run. Screenshots + email sending.</div>
+    <p>One-click website screenshot → optional email. Or use the Plan/Run section below.</p>
 
-    <label>Describe what to automate</label>
-    <textarea id="prompt" rows="3">Screenshot https://cnn.com and email it to support@mivado.co</textarea>
-    <div style="margin:12px 0;">
-      <button id="btnPlan">Plan</button>
-      <button id="btnRun">Run</button>
+    <div class="card">
+      <label>Website URL</label>
+      <input id="quick-url" value="https://www.cnn.com" />
+      <label>Destination email (optional)</label>
+      <input id="quick-email" placeholder="you@example.com" />
+      <button onclick="runQuick()">Capture &amp; Email</button>
+      <div id="quick-out" style="margin-top:12px"></div>
     </div>
 
-    <div class="row">
-      <div>
-        <label>Planned Flow</label>
-        <pre id="planBox">—</pre>
+    <div class="card">
+      <h3>Plan / Run</h3>
+      <div class="row">
+        <div>
+          <label>Describe what to automate</label>
+          <input id="prompt" value="Screenshot https://cnn.com and email it to support@mivado.co" />
+          <div class="row">
+            <button onclick="plan()">Plan</button>
+            <button onclick="run()">Run</button>
+          </div>
+        </div>
+        <div>
+          <label>Output</label>
+          <pre id="plan-out">—</pre>
+          <pre id="run-out">—</pre>
+        </div>
       </div>
-      <div>
-        <label>Run Console</label>
-        <pre id="runBox">—</pre>
-      </div>
+      <p style="margin-top:12px;color:#789">
+        Examples: “Screenshot https://cnn.com and email it to you@example.com”.
+        “Get top 3 links from https://www.inc.com and email to me@example.com”.
+        “Save https://example.com as PDF and email to me@example.com”.
+      </p>
     </div>
 
-    <hr style="margin:28px 0;border:0;border-top:1px solid #1b2533" />
-
-    <label>Quick tool: Capture a page and email the screenshot</label>
-    <div class="row">
-      <input id="quickUrl" placeholder="https://www.cnn.com" value="https://www.cnn.com" />
-      <input id="quickEmail" placeholder="you@example.com (optional)" />
+    <div class="card">
+      <h3>Endpoints</h3>
+      <pre>
+GET  /health
+POST /quick { url, email? }
+POST /plan  { prompt }
+POST /run   { steps: [...] }
+Static files: /runs/&lt;file&gt;
+      </pre>
     </div>
-    <div style="margin-top:12px">
-      <button id="btnQuick">Capture &amp; Email</button>
-    </div>
-    <pre id="quickBox"></pre>
   </div>
 
 <script>
-const planBox = document.getElementById('planBox');
-const runBox = document.getElementById('runBox');
-const quickBox = document.getElementById('quickBox');
+async function runQuick(){
+  const url = document.getElementById('quick-url').value.trim();
+  const email = document.getElementById('quick-email').value.trim();
+  const r = await fetch('/quick', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ url, email })
+  }).then(r=>r.json()).catch(e=>({ok:false,error:e.message}));
+  document.getElementById('quick-out').innerHTML =
+    r.ok ? `✅ Success.<br>Link: <a href="${r.url}" target="_blank">${r.url}</a><br>Email: ${r.email||"(not sent)"}`
+         : `❌ ${r.error}`;
+}
 
-document.getElementById('btnPlan').onclick = async () => {
-  planBox.textContent = 'Planning…';
-  try {
-    const prompt = document.getElementById('prompt').value;
-    const r = await fetch('/plan', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt}) });
-    const j = await r.json();
-    planBox.textContent = JSON.stringify(j, null, 2);
-  } catch (e) {
-    planBox.textContent = 'Error: ' + e;
-  }
-};
+let lastPlan = null;
 
-document.getElementById('btnRun').onclick = async () => {
-  runBox.textContent = 'Running…';
-  try {
-    // plan then run
-    const prompt = document.getElementById('prompt').value;
-    const p = await fetch('/plan', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt}) });
-    const pj = await p.json();
-    const steps = pj.steps || [];
-    const r = await fetch('/run', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({steps}) });
-    const j = await r.json();
-    runBox.textContent = JSON.stringify(j, null, 2);
-  } catch (e) {
-    runBox.textContent = 'Error: ' + e;
-  }
-};
+async function plan(){
+  const prompt = document.getElementById('prompt').value;
+  const r = await fetch('/plan', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ prompt })
+  }).then(r=>r.json());
+  lastPlan = r;
+  document.getElementById('plan-out').textContent = JSON.stringify(r, null, 2);
+}
 
-document.getElementById('btnQuick').onclick = async () => {
-  quickBox.textContent = 'Working…';
-  try {
-    const url = document.getElementById('quickUrl').value;
-    const email = document.getElementById('quickEmail').value || undefined;
-    const r = await fetch('/quick', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, email}) });
-    const j = await r.json();
-    quickBox.textContent = JSON.stringify(j, null, 2);
-  } catch (e) {
-    quickBox.textContent = 'Error: ' + e;
+async function run(){
+  if (!lastPlan || !lastPlan.steps) {
+    document.getElementById('run-out').textContent = "Plan first (no steps).";
+    return;
   }
-};
+  const r = await fetch('/run', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ steps: lastPlan.steps })
+  }).then(r=>r.json());
+  document.getElementById('run-out').textContent = JSON.stringify(r, null, 2);
+}
 </script>
 </body>
 </html>
+                                                                                
+  
+  
+  
+  
                                                             
   
   
