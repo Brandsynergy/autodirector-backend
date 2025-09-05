@@ -1,18 +1,24 @@
 {
   "name": "mediad-autodirector",
   "version": "1.0.0",
+  "description": "Capture a web page screenshot and optionally email it.",
   "type": "module",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "npx playwright install --with-deps chromium || true"
+    "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "nodemailer": "^6.9.11",
-    "playwright": "^1.55.0"
+    "morgan": "^1.10.0",
+    "nodemailer": "^6.9.13",
+    "playwright": "1.55.0"
   }
 }
+                    
+                      
+                      
+  
                     
                       
                       
