@@ -1,4 +1,4 @@
-// server.js — Mediad AutoDirector v4-automation (ESM)
+ // server.js — Mediad AutoDirector v4-automation (ESM)
 import express from "express";
 import cors from "cors";
 import path from "node:path";
@@ -407,6 +407,12 @@ app.get("/", (_req, res) => {
 
 app.use((_req, res) => res.status(404).send("Not Found"));
 app.listen(PORT, () => console.log(`Mediad backend listening on ${PORT}`));
+                                                                                                   
+  
+  
+  
+  
+  
                                                             
   
   
